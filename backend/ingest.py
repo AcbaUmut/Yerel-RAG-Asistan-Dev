@@ -1,9 +1,9 @@
 import os
 import time
 
-# Kendi yazdığımız veri yutma modülleri
-from core.document_parser import parse_document
-from core.vector_store import add_to_vector_store
+# Nesne Yönelimli (OOP) olarak güncellenmiş modüllerimiz
+from core.document_parser import DocumentParser
+from core.vector_store import VectorStoreEngine
 
 
 def main():
@@ -17,20 +17,22 @@ def main():
 
     start_time = time.time()
 
-    # 1. PDF'i Oku ve Parçala (450/150 token ayarıyla)
-    print(f"[{pdf_path}] okunuyor ve düğümlere ayrılıyor...")
-    chunks = parse_document(pdf_path)
+    # 1. MOTORLARIN AYAĞA KALDIRILMASI (Instantiating Objects)
+    # Bu satırlar çalıştığında parser hazır bekler, Nomic CPU'ya yerleşir.
+    parser_engine = DocumentParser(chunk_size=450, chunk_overlap=150)
+    vector_engine = VectorStoreEngine()
 
-    # 2. Vektörle ve ChromaDB'ye Kaydet
+    # 2. PDF'i OKU VE PARÇALA
+    chunks = parser_engine.parse(pdf_path)
+
+    # 3. VEKTÖRLE VE KAYDET
     print(
-        "Düğümler Nomic ile vektörlenip ChromaDB'ye yazılıyor. Bu işlem CPU hızına bağlı olarak sürebilir..."
+        "Düğümler Nomic ile vektörlenip ChromaDB'ye yazılıyor. CPU hızına bağlı olarak sürebilir..."
     )
-    add_to_vector_store(chunks)
+    vector_engine.add_nodes(chunks)
 
     print(f"\n=== İŞLEM BAŞARILI! (Toplam Süre: {time.time() - start_time:.2f} sn) ===")
-    print(
-        "Veritabanı güncellendi. Artık soru sormak için 'main.py' dosyasını çalıştırabilirsin."
-    )
+    print("Veritabanı güncellendi. Yeni OOP mimarisi kullanıma hazır.")
 
 
 if __name__ == "__main__":
