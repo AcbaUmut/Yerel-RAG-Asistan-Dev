@@ -3,7 +3,7 @@ from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
 
 
-def parse_pdf_to_nodes(pdf_path: str):
+def parse_document(pdf_path: str):
     print(f"[{pdf_path}] dosyası ayrıştırıcıya (parser) alındı...")
 
     # 1. Aşama: Loader ve Markdown Dönüşümü (pymupdf4llm farkı)
@@ -16,8 +16,8 @@ def parse_pdf_to_nodes(pdf_path: str):
 
     # 2. Aşama: Semantik Parçalama (Parser)
     parser = SentenceSplitter(
-        chunk_size=400,  # Modelin 512 sınırına çarpmaması için güvenli üst limit
-        chunk_overlap=80,  # Eskiye göre (50) artırılmış, daha güçlü bir bağlam köprüsü
+        chunk_size=450,  # Nomic v2 MoE'nin 512 sınırını asla aşmıyoruz. (Tokenizer farkları için güvenlik payı bırakıldı)
+        chunk_overlap=150,  # Kesişimi genişlettik. Bir chunk'ın son 150 tokenı, diğerinin ilk 150 tokenı olacak. Anlam kopmayacak.
     )
 
     # Tek bir büyük Markdown dokümanını, sindirilebilir küçük düğümlere (nodes) ayırıyoruz
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     test_dosyasi = "test.pdf"
 
     try:
-        uretilen_dugumler = parse_pdf_to_nodes(test_dosyasi)
+        uretilen_dugumler = parse_document(test_dosyasi)
 
         # İlk parçanın Markdown formatında nasıl göründüğünü inceleyelim
         print("\n--- İLK DÜĞÜMÜN (CHUNK) MARKDOWN İÇERİĞİ ---")

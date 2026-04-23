@@ -4,7 +4,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 
-def create_or_load_vector_store(
+def add_to_vector_store(
     nodes, persist_dir="./backend/chroma_db", collection_name="tez_koleksiyonu"
 ):
     print(f"Vektör veritabanı başlatılıyor... Kayıt dizini: {persist_dir}")
@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     try:
         uretilen_dugumler = parse_pdf_to_nodes(test_dosyasi)
-        index = create_or_load_vector_store(uretilen_dugumler)
+        index = add_to_vector_store(uretilen_dugumler)
         print(
             "\nSistem Kontrolü: Lütfen proje klasöründe 'chroma_db' adlı bir klasör oluştuğunu teyit edin."
         )

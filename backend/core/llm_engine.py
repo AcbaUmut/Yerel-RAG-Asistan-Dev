@@ -26,7 +26,8 @@ class LLMEngine:
         # 2. SİSTEM İSTEMİ (Gemma-2 Formatı)
         # Model mantık yürütmeye optimize edildiği için kısıtlamayı çok dar tutmuyoruz.
         prompt_text = """<start_of_turn>user
-Sen bir asistan yapay zekasın. Sana verilen 'Bağlam' metnini kullanarak kullanıcının sorusunu yanıtla. Eğer bilgi bağlamda yoksa uydurma.
+Sen KESİNLİKLE kendi önceden eğitilmiş bilgini KULLANMAYAN, sadece verilen bağlama sadık kalan bir asistansın.
+Aşağıdaki 'Bağlam' metninde kullanıcının sorusunun cevabı yoksa, "Bu bilgiye sahip değilim." de. Asla uydurma yapma!
 
 Bağlam:
 {context}

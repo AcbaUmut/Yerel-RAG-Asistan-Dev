@@ -1,67 +1,46 @@
-import os  # noqa: F401
 import time
 
-# Kendi yazdığımız çekirdek modülleri içeri aktarıyoruz
-# Not: Fonksiyon/Sınıf isimlerini kendi dosyalarına göre düzenlemelisin.
-from core.document_parser import parse_pdf_to_nodes
 from core.llm_engine import LLMEngine
-from core.retriever import get_relevant_context
-from core.vector_store import create_or_load_vector_store
+from core.retriever import RetrieverEngine
+
+# Yutma işlemleri zaten yapıldığı için parser ve vector_store importlarını kapattık.
 
 
 def main():
-    # 1. Dosya Yolları
-    pdf_path = "test.pdf"
-    # Modelin tam adını models klasöründeki isme göre güncelle
-    model_path = "./backend/models/Turkish-Gemma-9b-T1.Q4_K_M.gguf"
+    model_path = "./backend/models/Turkish-Gemma-9b-T1-Q4_K_M.gguf"  # Dosya adını kontrol et (Nokta yerine tire olabilir)
 
     print("=== YEREL RAG SİSTEMİ BAŞLATILIYOR ===")
 
-    # 2. Veri Yutma ve Vektörleme (Sadece ilk çalışmada veya belge değiştiğinde gerekir)
-    print(f"[1/4] '{pdf_path}' okunuyor ve vektör veritabanına (CPU) işleniyor...")
+    # 1. AŞAMA: GERİ ÇAĞIRMA (SADECE CPU VE RAM)
+    # GPU bu aşamada tamamen boşta dinleniyor.
+    print("[1/3] Arama Motoru ve Hakem (CPU) başlatılıyor...")
     start_time = time.time()
+    retriever = RetrieverEngine()
+    print(f"      Sistem hazır. (Süre: {time.time() - start_time:.2f} sn)\n")
 
-    # Eğer ChromaDB'ye zaten kaydettiysen bu iki satırı yorum satırı (#) yapabilirsin.
-    chunks = parse_pdf_to_nodes(pdf_path)
-    create_or_load_vector_store(chunks)
-
-    print(f"      Vektörleme tamamlandı. (Süre: {time.time() - start_time:.2f} sn)\n")
-
-    # 3. LLM Motorunu Ayağa Kaldırma (GPU'ya Yükleme)
-    print("[2/4] Gemma Q4_K_M Modeli tamamen GPU'ya yükleniyor...")
-    start_time = time.time()
-    llm = LLMEngine(model_path=model_path)
-    print(f"      Model yüklendi ve hazır. (Süre: {time.time() - start_time:.2f} sn)\n")
-
-    # 4. Test Sorusu
-    # Sunumunda geçen spesifik bir bilgi üzerinden test ediyoruz.
-    question = (
-        "Charles Babbage'ın tasarladığı makinenin adı nedir ve temel amacı neydi?"
-    )
+    question = "C dili nedir?"
     print(f"Soru: {question}\n")
 
-    # 5. Geri Çağırma (Retriever) ve Hakem Filtresi
-    print(
-        "[3/4] Hakem (Reranker) çalışıyor, veritabanından sadece en alakalı bağlam süzülüyor..."
-    )
+    print("[2/3] Veritabanında arama yapılıyor ve Hakem süzgecinden geçiriliyor...")
     start_time = time.time()
-
-    # Bu fonksiyonun sana direkt metin (string) döndürdüğünü varsayıyorum.
-    # Eğer Document objesi döndürüyorsa, burada birleştirme işlemi (join) yapmalısın.
-    context_text = get_relevant_context(question)
-
+    context_text = retriever.get_relevant_context(question, top_n=2, threshold=0.0)
     print(f"      Bağlam süzüldü. (Süre: {time.time() - start_time:.2f} sn)\n")
 
-    # 6. Üretim (Generation)
-    print("[4/4] Gemma düşünüyor ve yanıt üretiyor...\n")
+    # 2. AŞAMA: LLM MOTORUNU AYAĞA KALDIRMA (GPU İŞGALİ BAŞLIYOR)
+    # Veriyi bulduk, temizledik, artık cevap üretmek için ekran kartını devreye sokuyoruz.
+    print("[3/3] Gemma Q4_K_M Modeli VRAM'e yükleniyor...")
+    start_time = time.time()
+    llm = LLMEngine(model_path=model_path)
+
+    print("\nGemma düşünüyor ve yanıt üretiyor...")
     print("=" * 60)
 
-    start_time = time.time()
+    generation_start = time.time()
     answer = llm.generate_answer(context=context_text, question=question)
 
     print(answer)
     print("=" * 60)
-    print(f"\nYanıt Üretim Süresi: {time.time() - start_time:.2f} saniye")
+    print(f"\nYanıt Üretim Süresi: {time.time() - generation_start:.2f} saniye")
     print("=== TEST BAŞARIYLA TAMAMLANDI ===")
 
 

@@ -2,93 +2,62 @@ from langchain_chroma import Chroma
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_huggingface import HuggingFaceEmbeddings
 
-# --- GLOBAL MODEL YÜKLEME (Sadece bir kez çalışır) ---
-print("Sistem modelleri belleğe alınıyor (CPU)...")
 
-# Vektörleyici (CPU)
-embeddings = HuggingFaceEmbeddings(
-    model_name="nomic-ai/nomic-embed-text-v2-moe",
-    model_kwargs={"device": "cpu", "trust_remote_code": True},
-)
+class RetrieverEngine:
+    def __init__(
+        self, persist_dir="./backend/chroma_db", collection_name="tez_koleksiyonu"
+    ):
+        """
+        Modelleri sadece bu sınıf (class) çağrıldığında RAM'e yükler. Global israfı önler.
+        """
+        print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
 
-# Hakem (CPU)
-bge_model = HuggingFaceCrossEncoder(
-    model_name="BAAI/bge-reranker-v2-m3", model_kwargs={"device": "cpu"}
-)
+        # Vektörleyici (CPU)
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="nomic-ai/nomic-embed-text-v2-moe",
+            model_kwargs={"device": "cpu", "trust_remote_code": True},
+        )
 
-# Veritabanı Bağlantısı
-vectorstore = Chroma(
-    persist_directory="./backend/chroma_db",
-    embedding_function=embeddings,
-    collection_name="tez_koleksiyonu",
-)
+        # Hakem (CPU)
+        self.bge_model = HuggingFaceCrossEncoder(
+            model_name="BAAI/bge-reranker-v2-m3", model_kwargs={"device": "cpu"}
+        )
 
-# Temel Geri Çağırıcı
-base_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+        # Veritabanı Bağlantısı
+        self.vectorstore = Chroma(
+            persist_directory=persist_dir,
+            embedding_function=self.embeddings,
+            collection_name=collection_name,
+        )
 
+        self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
 
-def get_relevant_context(query: str, top_n: int = 3, threshold: float = 0.0):
-    """
-    Kullanıcı sorgusuna en yakın, doğrulanmış ve sıralanmış dökümanları döndürür.
+    def get_relevant_context(self, query: str, top_n: int = 3, threshold: float = 0.0):
+        # 1. Kaba Arama
+        raw_docs = self.base_retriever.invoke(query)
+        if not raw_docs:
+            return (
+                ""  # LLM string beklediği için boş liste değil, boş string dönüyoruz.
+            )
 
-    Args:
-        query (str): Kullanıcının sorusu.
-        top_n (int): Maksimum kaç döküman dönecek?
-        threshold (float): Alakalılık puanı bu değerden düşük olanlar elenir.
+        # 2. Hakeme Puanlat
+        pairs = [[query, doc.page_content] for doc in raw_docs]
+        scores = self.bge_model.score(pairs)
 
-    Returns:
-        list: Sıralanmış ve filtrelenmiş döküman listesi.
-    """
+        # 3. Puanları Ekle ve Sırala
+        for doc, score in zip(raw_docs, scores):
+            doc.metadata["relevance_score"] = float(score)
 
-    # 1. Adım: Veritabanından kaba arama yap
-    raw_docs = base_retriever.invoke(query)
+        sorted_docs = sorted(
+            raw_docs, key=lambda x: x.metadata["relevance_score"], reverse=True
+        )
+        filtered_docs = [
+            doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
+        ]
 
-    if not raw_docs:
-        return []
+        # 4. LLM İçin Tek Parça Metne Çevir (Kritik Düzeltme)
+        # Gemma listeleri değil, düz metni (string) okur. Dökümanları uç uca ekleyerek tek metin yapıyoruz.
+        best_docs = filtered_docs[:top_n]
+        context_string = "\n\n".join([doc.page_content.strip() for doc in best_docs])
 
-    # 2. Adım: Hakeme (Reranker) puanlat
-    pairs = [[query, doc.page_content] for doc in raw_docs]
-    scores = bge_model.score(pairs)
-
-    # 3. Adım: Puanları işle ve dökümanlara ekle
-    for doc, score in zip(raw_docs, scores):
-        doc.metadata["relevance_score"] = float(score)
-
-    # 4. Adım: Sırala
-    sorted_docs = sorted(
-        raw_docs, key=lambda x: x.metadata["relevance_score"], reverse=True
-    )
-
-    # 5. Adım: Eşik Değeri (Threshold) Filtrelemesi
-    # Belirlediğin puanın altındakiler Gemma'yı kirletmesin diye elenir
-    filtered_docs = [
-        doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
-    ]
-
-    # 6. Adım: En iyi N sonucu döndür
-    return filtered_docs[:top_n]
-
-
-# --- KENDİ BAŞINA ÇALIŞTIRMA TESTİ ---
-if __name__ == "__main__":
-    test_query = (
-        "Charles Babbage'ın tasarladığı makinenin adı nedir ve temel amacı neydi?"
-    )
-    print(f"\n[TEST] Sorgu: {test_query}")
-
-    # Fonksiyonu çağırıyoruz
-    results = get_relevant_context(test_query, top_n=3, threshold=0.0)
-
-    print("\n" + "=" * 50)
-    print(" DOĞRULANMIŞ VE FİLTRELENMİŞ SONUÇLAR ")
-    print("=" * 50)
-
-    if not results:
-        print("Belirtilen eşik değerini geçen bir sonuç bulunamadı.")
-    else:
-        for i, doc in enumerate(results):
-            score = doc.metadata.get("relevance_score", 0.0)
-            print(f"\n[Sıra {i + 1}] Skor: {score:.4f}")
-            print(f"Kaynak: {doc.metadata.get('file_name', 'Bilinmiyor')}")
-            print(f"İçerik: {doc.page_content.strip()}")
-            print("-" * 20)
+        return context_string
