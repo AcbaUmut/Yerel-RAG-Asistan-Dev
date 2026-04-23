@@ -4,3 +4,4 @@ backend/models/*.gguf
 backend/models/*.bin
 backend/chroma_db/
 backend/data/
+.vscode/
