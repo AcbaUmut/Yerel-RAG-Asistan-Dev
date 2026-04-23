@@ -15,7 +15,10 @@ def parse_pdf_to_nodes(pdf_path: str):
     doc = Document(text=md_text, metadata={"file_name": pdf_path})
 
     # 2. Aşama: Semantik Parçalama (Parser)
-    parser = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+    parser = SentenceSplitter(
+        chunk_size=400,  # Modelin 512 sınırına çarpmaması için güvenli üst limit
+        chunk_overlap=80,  # Eskiye göre (50) artırılmış, daha güçlü bir bağlam köprüsü
+    )
 
     # Tek bir büyük Markdown dokümanını, sindirilebilir küçük düğümlere (nodes) ayırıyoruz
     nodes = parser.get_nodes_from_documents([doc])

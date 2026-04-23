@@ -27,7 +27,7 @@ vectorstore = Chroma(
 base_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
 
-def get_relevant_context(query: str, top_n: int = 3, threshold: float = 0.50):
+def get_relevant_context(query: str, top_n: int = 3, threshold: float = 0.0):
     """
     Kullanıcı sorgusuna en yakın, doğrulanmış ve sıralanmış dökümanları döndürür.
 
@@ -71,11 +71,13 @@ def get_relevant_context(query: str, top_n: int = 3, threshold: float = 0.50):
 
 # --- KENDİ BAŞINA ÇALIŞTIRMA TESTİ ---
 if __name__ == "__main__":
-    test_query = "C dili ne zaman geliştirildi?"
+    test_query = (
+        "Charles Babbage'ın tasarladığı makinenin adı nedir ve temel amacı neydi?"
+    )
     print(f"\n[TEST] Sorgu: {test_query}")
 
     # Fonksiyonu çağırıyoruz
-    results = get_relevant_context(test_query, top_n=3, threshold=0.75)
+    results = get_relevant_context(test_query, top_n=3, threshold=0.0)
 
     print("\n" + "=" * 50)
     print(" DOĞRULANMIŞ VE FİLTRELENMİŞ SONUÇLAR ")
