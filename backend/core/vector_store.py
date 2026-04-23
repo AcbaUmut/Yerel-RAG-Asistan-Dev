@@ -49,12 +49,12 @@ def add_to_vector_store(
 
 # --- Test Alanı ---
 if __name__ == "__main__":
-    from document_parser import parse_pdf_to_nodes
+    from document_parser import parse_document
 
     test_dosyasi = "test.pdf"
 
     try:
-        uretilen_dugumler = parse_pdf_to_nodes(test_dosyasi)
+        uretilen_dugumler = parse_document(test_dosyasi)
         index = add_to_vector_store(uretilen_dugumler)
         print(
             "\nSistem Kontrolü: Lütfen proje klasöründe 'chroma_db' adlı bir klasör oluştuğunu teyit edin."
