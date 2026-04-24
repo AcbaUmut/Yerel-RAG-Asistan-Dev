@@ -1,5 +1,6 @@
 import base64
 import os
+import time
 
 from llama_cpp import Llama
 from llama_cpp.llama_chat_format import Llava15ChatHandler
@@ -9,6 +10,7 @@ class VLMEngine:
     def __init__(self, model_path: str, mmproj_path: str):
         """
         Görsel Dil Modelini (VLM) başlatır.
+        İki Aşamalı Mimari (Gözcü Sınıflandırıcı + Uzman Çıkarıcı)
         """
         if not os.path.exists(model_path) or not os.path.exists(mmproj_path):
             raise FileNotFoundError(
@@ -17,78 +19,162 @@ class VLMEngine:
 
         print("[SİSTEM] VLM Motoru (ZwZ-4B) VRAM'e yükleniyor...")
 
-        # Görsel veriyi dil modelinin anlayacağı vektörlere çeviren köprü
         self.chat_handler = Llava15ChatHandler(clip_model_path=mmproj_path)
 
-        # Ana Modeli Yükleme (VRAM'i dolduracak olan kısım)
         self.llm = Llama(
             model_path=model_path,
             chat_handler=self.chat_handler,
-            n_ctx=4096,
-            n_gpu_layers=-1,  # Ekran kartını tam kapasite kullan
-            verbose=False,  # Terminali gereksiz loglarla doldurmaması için
+            n_ctx=8192,  # KAPTANIN EMRİYLE 8192'YE YÜKSELTİLDİ (Rahat nefes alma alanı)
+            n_gpu_layers=-1,
+            verbose=False,
         )
         print("[SİSTEM] VLM Motoru başarıyla ayağa kalktı.")
 
     def _image_to_base64_data_uri(self, file_path: str) -> str:
-        """
-        llama.cpp'nin resmi okuyabilmesi için onu Base64 formatına çevirir.
-        """
         with open(file_path, "rb") as img_file:
             base64_data = base64.b64encode(img_file.read()).decode("utf-8")
             return f"data:image/png;base64,{base64_data}"
 
-    def extract_text(self, image_path: str) -> str:
+    def _classify_image(self, data_uri: str) -> str:
         """
-        Acımasız OCR Modu: Resimdeki metni/tabloyu okur, yorum yapmadan döndürür.
+        AŞAMA 1: GÖZCÜ (Sınıflandırma)
         """
-        if not os.path.exists(image_path):
-            return ""
-
-        print(f"[VLM] Görsel analiz ediliyor: {os.path.basename(image_path)}")
-        data_uri = self._image_to_base64_data_uri(image_path)
-
-        # VLM'in gevezeliğini susturduğumuz ama şema yeteneği eklediğimiz "Gelişmiş Diktatör İstemi"
-        system_prompt = (
-            "Sen bir veri çıkarma (OCR) ve yapılandırılmış analiz asistanısın. "
-            "Görevlerin şunlardır:\n"
-            "1. Sadece ve sadece görseldeki metinleri, formülleri veya tabloları oku.\n"
-            "2. ÖNEMLİ: Eğer görsel bir AKIŞ DİYAGRAMI, ŞEMA veya ALGORİTMA ise, sadece yazıları alt alta yazma! Mantıksal akışı, hiyerarşiyi ve okların yönünü koruyarak yapılandırılmış Markdown (pseudo-code veya girintili liste) olarak çıktı ver.\n"
-            "3. Görselde ne gördüğüne dair hiçbir yorum yapma, sohbet etme (Örn: 'Bu resimde bir şema var' DEME).\n"
-            "4. Eğer görsel sadece okunacak metni olmayan bir obje, manzara veya fotoğraf ise (formül/tablo/yazı yoksa) hiçbir şey yazmadan boş bırak."
+        classifier_prompt = (
+            "Bu görselin türü nedir? Sadece şu 4 kelimeden BİRİNİ yaz: "
+            "DÜZ_METİN, TABLO, SEMA_GRAFIK, GORSEL_BETİMLEME. "
+            "İPUCU: Eğer görselde oklar olmasa bile, katmanlı yapılar (layers), hiyerarşik bloklar, "
+            "sistem topolojileri, mimari tasarımlar veya algoritmik akış diyagramları varsa KESİNLİKLE 'SEMA_GRAFIK' seç. "
+            "Başka hiçbir kelime veya açıklama ekleme."
         )
-
         try:
             response = self.llm.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "system",
+                        "content": "Sen bir görsel sınıflandırma asistanısın. Sadece istenen kategoriyi döndürürsün.",
+                    },
                     {
                         "role": "user",
                         "content": [
                             {"type": "image_url", "image_url": {"url": data_uri}},
-                            {
-                                "type": "text",
-                                "text": "Bu görseldeki metinleri veya tabloları Markdown formatında çıkar.",
-                            },
+                            {"type": "text", "text": classifier_prompt},
                         ],
                     },
                 ],
-                max_tokens=1024,  # Görseldeki metin uzun olabileceği için sınırı geniş tuttuk
-                temperature=0.0,  # Halüsinasyonu sıfırlamak için (Yaratıcılık kapalı)
+                max_tokens=15,
+                temperature=0.0,
+            )
+            category = response["choices"][0]["message"]["content"].strip().upper()
+
+            valid_categories = ["DÜZ_METİN", "TABLO", "SEMA_GRAFIK", "GORSEL_BETİMLEME"]
+            for valid_cat in valid_categories:
+                if valid_cat in category:
+                    return valid_cat
+            return "GORSEL_BETİMLEME"
+
+        except Exception as e:
+            print(f"[VLM SINIFLANDIRMA HATA] {e}")
+            return "GORSEL_BETİMLEME"
+
+    def _get_specialist_prompt(self, category: str) -> str:
+        """
+        Gözcüden gelen kategoriye göre Uzman'a verilecek zengin talimatı döndürür.
+        RAG KELİME İNDEKSLEMESİ (Görsel İçeriği) VE SÖZDE KOD YASAĞI EKLENDİ.
+        """
+        end_rule = "\nAnalizini tamamladığında sonuna KESİNLİKLE tam olarak '[ANALİZ_BİTTİ]' yaz ve kelime üretmeyi bırak."
+
+        if category == "DÜZ_METİN":
+            return (
+                "Önce bu görselin ne hakkında olduğunu (örneğin bir kitap sayfası, slayt, kod bloğu veya formül olduğunu) tek bir cümle ile özetle. "
+                "Ardından görseldeki tüm metinleri, formülleri veya karakterleri Markdown formatında eksiksiz olarak çıkar."
+                + end_rule
+            )
+        elif category == "TABLO":
+            return (
+                "Önce bu tablonun ne tablosu olduğunu ve hangi verileri içerdiğini tek bir cümle ile açıkla. "
+                "Ardından satır ve sütun yapısını KESİNLİKLE bozmadan tüm veriyi Markdown tablosu olarak çiz."
+                + end_rule
+            )
+        elif category == "SEMA_GRAFIK":
+            return (
+                "Bu görsel bir şema, mimari, katmanlı yapı, sistem topolojisi veya akış diyagramıdır. "
+                "1. Görselin genel amacını 1-2 cümleyle açıkla.\n"
+                "2. Görseldeki hiyerarşiyi, katmanları (yukarıdan aşağıya veya tam tersi), yapısal blokları ve eğer varsa akış yönünü detaylıca anlat. KESİNLİKLE uydurma sözde kod (pseudo-code) veya sahte algoritmalar YAZMA.\n"
+                "3. En sona KESİNLİKLE 'Görsel İçeriği:' adında bir bölüm aç ve görselin içindeki tüm metinleri, etiketleri ve anahtar kelimeleri eksiksiz bir liste halinde alt alta yaz."
+                + end_rule
+            )
+        else:  # GORSEL_BETİMLEME
+            return (
+                "Bu görsel bir fotoğraf, çizim, nesne veya sahnedir. "
+                "Görselde genel olarak ne gördüğünü detaylı ve zengin bir dille betimle. "
+                "En sona KESİNLİKLE 'Görsel İçeriği:' adında bir bölüm aç ve görselin içinde okunabilen tüm metin veya tabelaları liste halinde ekle."
+                + end_rule
             )
 
+    def extract_text(self, image_path: str) -> str:
+        if not os.path.exists(image_path):
+            return ""
+
+        print(f"\n[VLM] Görsel analiz ediliyor: {os.path.basename(image_path)}")
+        data_uri = self._image_to_base64_data_uri(image_path)
+
+        total_start = time.time()
+
+        # AŞAMA 1: Sınıflandırma
+        print("[VLM] Aşama 1: Gözcü çalışıyor (Sınıflandırma)...")
+        cat_start = time.time()
+        category = self._classify_image(data_uri)
+        cat_end = time.time()
+        print(f"      Gözcü Çalışmayı Bitirdi! (Süre: {cat_end - cat_start:.2f} sn)")
+        print(f"      Tespit edilen tür: {category}")
+
+        # AŞAMA 2: Uzman Çıkarımı
+        print("[VLM] Aşama 2: Uzman çalışıyor (Detaylı Analiz)...")
+        specialist_prompt = self._get_specialist_prompt(category)
+
+        try:
+            exp_start = time.time()
+            response = self.llm.create_chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Sen yapılandırılmış analiz yapan, öz ve net konuşan bir asistansın. Gereksiz tekrarlara girmez, isteneni verir ve sözünü bitirirsin.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": data_uri}},
+                            {"type": "text", "text": specialist_prompt},
+                        ],
+                    },
+                ],
+                max_tokens=1500,  # Uzun OCR ve içerik dökümleri için 1500 korundu.
+                temperature=0.0,
+                repeat_penalty=1.20,
+                stop=[
+                    "[ANALİZ_BİTTİ]"  # ÖZEL ATEŞKES SİNYALİMİZ
+                ],
+            )
+            exp_end = time.time()
+
+            # Modelden gelen ham metni alıyoruz
             extracted_text = response["choices"][0]["message"]["content"].strip()
-            return extracted_text
+
+            # Eğer model [ANALİZ_BİTTİ] yazdıysa temizliyoruz
+            extracted_text = extracted_text.replace("[ANALİZ_BİTTİ]", "").strip()
+
+            print(
+                f"      Uzman Çalışmayı Bitirdi! (Süre: {exp_end - exp_start:.2f} sn)"
+            )
+            print(f"      [Toplam VLM İşlemi: {exp_end - total_start:.2f} sn]\n")
+
+            return f"--- [GÖRSEL TÜRÜ: {category}] ---\n{extracted_text}"
 
         except Exception as e:
             print(f"[VLM HATA] Görsel okunurken bir sorun oluştu: {e}")
             return ""
 
     def unload(self):
-        """
-        VRAM Nöbet Değişimi: İşlem bitince VLM'i RAM/VRAM'den siler.
-        Bu sayede Gemma (LLM) yüklendiğinde 'Out of Memory' hatası almayız.
-        """
         print("[SİSTEM] VLM Motoru VRAM'den tahliye ediliyor...")
         del self.llm
         del self.chat_handler

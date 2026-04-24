@@ -10,7 +10,9 @@ def test_ocr_extraction():
 
     # Bir önceki aşamada çıkardığımız test resimlerinden birini seçiyoruz
     # Lütfen klasördeki var olan bir .png dosyasının adını buraya yaz (Fark makinesi olursa harika olur)
-    test_resim_yolu = "backend/data/temp_images/test/test.pdf-0037-02.png"  # BURAYI KENDİ DOSYANA GÖRE GÜNCELLE
+    test_resim_yolu = (
+        "backend/data/temp_images/test/a.jpeg"  # BURAYI KENDİ DOSYANA GÖRE GÜNCELLE
+    )
 
     if not os.path.exists(test_resim_yolu):
         print(f"[HATA] Test edilecek resim bulunamadı: {test_resim_yolu}")
