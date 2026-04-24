@@ -13,26 +13,28 @@ def main():
 
     # 1. AŞAMA: GERİ ÇAĞIRMA (SADECE CPU VE RAM)
     # GPU bu aşamada tamamen boşta dinleniyor.
-    print("[1/3] Arama Motoru ve Hakem (CPU) başlatılıyor...")
+    print("[1/4] Arama Motoru ve Hakem (CPU) başlatılıyor...")
     start_time = time.time()
     retriever = RetrieverEngine()
     print(f"      Sistem hazır. (Süre: {time.time() - start_time:.2f} sn)\n")
 
     question = "C dili nedir?"
+
     print(f"Soru: {question}\n")
 
-    print("[2/3] Veritabanında arama yapılıyor ve Hakem süzgecinden geçiriliyor...")
+    print("[2/4] Veritabanında arama yapılıyor ve Hakem süzgecinden geçiriliyor...")
     start_time = time.time()
     context_text = retriever.get_relevant_context(question, top_n=2, threshold=0.0)
     print(f"      Bağlam süzüldü. (Süre: {time.time() - start_time:.2f} sn)\n")
 
     # 2. AŞAMA: LLM MOTORUNU AYAĞA KALDIRMA (GPU İŞGALİ BAŞLIYOR)
     # Veriyi bulduk, temizledik, artık cevap üretmek için ekran kartını devreye sokuyoruz.
-    print("[3/3] Gemma Q4_K_M Modeli VRAM'e yükleniyor...")
+    print("[3/4] Gemma Q4_K_M Modeli VRAM'e yükleniyor...")
     start_time = time.time()
     llm = LLMEngine(model_path=model_path)
+    print(f"      Gemma yüklendi. (Süre: {time.time() - start_time:.2f} sn)\n")
 
-    print("\nGemma düşünüyor ve yanıt üretiyor...")
+    print("\n[4/4]Gemma düşünüyor ve yanıt üretiyor...")
     print("=" * 60)
 
     generation_start = time.time()
