@@ -1,7 +1,8 @@
 backend/venv/
 __pycache__/
-backend/models/*.gguf
-backend/models/*.bin
+backend/models/
+*.gguf
+*.bin
 backend/chroma_db/
 backend/data/
 .vscode/
