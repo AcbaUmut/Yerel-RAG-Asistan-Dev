@@ -17,14 +17,13 @@ class VectorStoreEngine:
         self.persist_dir = persist_dir
         self.collection_name = collection_name
 
-        # 1. Aşama: Embedding Modelinin Sabitlenmesi (Sadece bir kez çalışır)
-        # 8GB VRAM sınırını korumak için Nomic modeli kesin olarak CPU'ya hapsedilir.
+        # 1. Aşama: Embedding Modelinin Sabitlenmesi (8GB VRAM koruması için CPU)
         Settings.embed_model = HuggingFaceEmbedding(
             model_name="nomic-ai/nomic-embed-text-v2-moe",
             device="cpu",
             trust_remote_code=True,
         )
-        Settings.llm = None  # Yutma aşamasında LLM (Gemma) kesinlikle kullanılmaz.
+        Settings.llm = None
 
         # 2. Aşama: ChromaDB İstemcisinin Başlatılması
         self.db_client = chromadb.PersistentClient(path=self.persist_dir)
@@ -37,13 +36,26 @@ class VectorStoreEngine:
             vector_store=self.vector_store
         )
 
-    def add_nodes(self, nodes):
+    def add_nodes(self, nodes, file_name: str):
         """
-        Düğümleri Nomic ile sayısal vektörlere çevirip ChromaDB'ye diske yazar.
+        Düğümleri Nomic ile sayısal vektörlere çevirip ChromaDB'ye yazar.
+        Çakışmaları önlemek için önce dosyanın eski kayıtlarını temizler.
         """
         if not nodes:
             print("Uyarı: Veritabanına eklenecek düğüm (node) bulunamadı.")
             return None
+
+        # --- EKLENEN CRUD (SİLME) MANTIĞI ---
+        try:
+            # Metadata içindeki 'file_name' anahtarına göre eski kayıtları bul ve sil
+            self.chroma_collection.delete(where={"file_name": file_name})
+            print(
+                f"[SİSTEM] Eski '{file_name}' kayıtları ChromaDB'den başarıyla temizlendi."
+            )
+        except Exception:
+            # Eğer koleksiyon yepyeni ise veya bu dosya daha önce hiç yüklenmediyse burası sessizce geçilir.
+            pass
+        # ------------------------------------
 
         print(f"Toplam {len(nodes)} düğüm vektör uzayına gömülüyor...")
 
@@ -54,6 +66,5 @@ class VectorStoreEngine:
         return index
 
 
-# --- Test Alanı ---
 if __name__ == "__main__":
     print("Test için lütfen ingest.py dosyasını kullanınız.")
