@@ -14,7 +14,7 @@ class LLMEngine:
         self.llm = LlamaCpp(
             model_path=model_path,
             temperature=0.1,
-            max_tokens=2048,  # Düşünme faslı uzun süreceği için maksimum token artırıldı.
+            max_tokens=1024,  # Düşünme faslı uzun süreceği için maksimum token artırıldı.
             n_ctx=4096,  # Genişletilmiş bağlam ve düşünme penceresi.
             n_gpu_layers=-1,  # Modelin TAMAMI 8GB VRAM'e yükleniyor. PCIe darboğazı iptal.
             n_batch=512,
