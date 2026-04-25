@@ -24,7 +24,7 @@ def main():
 
     print("[2/4] Veritabanında arama yapılıyor ve Hakem süzgecinden geçiriliyor...")
     check_time = time.time()
-    context_text = retriever.get_relevant_context(question, top_n=2, threshold=0.0)
+    context_text = retriever.get_relevant_context(question, top_n=3, threshold=0.0)
     print(f"      Bağlam süzüldü. (Süre: {time.time() - check_time:.2f} sn)\n")
 
     # 2. AŞAMA: LLM MOTORUNU AYAĞA KALDIRMA (GPU İŞGALİ BAŞLIYOR)

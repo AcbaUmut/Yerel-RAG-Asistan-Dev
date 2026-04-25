@@ -24,7 +24,7 @@ class VLMEngine:
         self.llm = Llama(
             model_path=model_path,
             chat_handler=self.chat_handler,
-            n_ctx=8192,  # KAPTANIN EMRİYLE 8192'YE YÜKSELTİLDİ (Rahat nefes alma alanı)
+            n_ctx=4096,  # 8192'den 4096'ya DÜŞÜRÜLDÜ (Resim ~2500, Çıktı ~1000 = 3500 güvenli alan)
             n_gpu_layers=-1,
             verbose=False,
         )
