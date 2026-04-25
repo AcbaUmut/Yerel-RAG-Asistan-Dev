@@ -1,6 +1,7 @@
 import chromadb
+from langchain_community.embeddings import LlamaCppEmbeddings
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.langchain import LangchainEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 
@@ -17,12 +18,22 @@ class VectorStoreEngine:
         self.persist_dir = persist_dir
         self.collection_name = collection_name
 
-        # 1. Aşama: Embedding Modelinin Sabitlenmesi (8GB VRAM koruması için CPU)
-        Settings.embed_model = HuggingFaceEmbedding(
-            model_name="nomic-ai/nomic-embed-text-v2-moe",
-            device="cpu",
-            trust_remote_code=True,
+        # 1. Aşama: Embedding Modelinin Sabitlenmesi (Jina V5 Nano F16 GGUF)
+        # KENDİ DOSYA ADINA GÖRE BURAYI DÜZENLE
+        jina_model_path = (
+            "./backend/models/jina-embeddings-v5-text-nano-retrieval-f16.gguf"
         )
+
+        print("[SİSTEM] Jina V5 Nano GGUF (CPU) modeli başlatılıyor...")
+        lc_embed_model = LlamaCppEmbeddings(
+            model_path=jina_model_path,
+            n_ctx=8192,  # Jina'nın devasa 8K sınırı
+            n_batch=512,  # İşlemcinin tek seferde yutacağı miktar
+            device="cpu",
+        )
+
+        # Langchain embedding'ini LlamaIndex'in anlayacağı formata çeviriyoruz
+        Settings.embed_model = LangchainEmbedding(lc_embed_model)
         Settings.llm = None
 
         # 2. Aşama: ChromaDB İstemcisinin Başlatılması
@@ -38,7 +49,7 @@ class VectorStoreEngine:
 
     def add_nodes(self, nodes, file_name: str):
         """
-        Düğümleri Nomic ile sayısal vektörlere çevirip ChromaDB'ye yazar.
+        Düğümleri Jina ile sayısal vektörlere çevirip ChromaDB'ye yazar.
         Çakışmaları önlemek için önce dosyanın eski kayıtlarını temizler.
         """
         if not nodes:

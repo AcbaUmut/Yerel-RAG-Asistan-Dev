@@ -30,7 +30,7 @@ def main():
         return
 
     # 2. PDF'i OKU, VLM'İ KULLAN VE PARÇALA
-    parser_engine = DocumentParser(chunk_size=450, chunk_overlap=150)
+    parser_engine = DocumentParser(chunk_size=1024, chunk_overlap=200)
 
     # VLM motorunu parser'a veriyoruz. Resimleri bulup analiz edip metne gömecek.
     chunks = parser_engine.parse(pdf_path, vlm_engine=vlm_engine)

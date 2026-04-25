@@ -1,6 +1,6 @@
 from langchain_chroma import Chroma
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import LlamaCppEmbeddings
 
 
 class RetrieverEngine:
@@ -12,10 +12,14 @@ class RetrieverEngine:
         """
         print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
 
-        # Vektörleyici (CPU)
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="nomic-ai/nomic-embed-text-v2-moe",
-            model_kwargs={"device": "cpu", "trust_remote_code": True},
+        # Vektörleyici (Jina V5 Nano GGUF - CPU)
+        jina_model_path = "./backend/models/jina-embeddings-v5-text-nano-retrieval-f16.gguf"  # Kendi dosya adına göre düzenle
+
+        self.embeddings = LlamaCppEmbeddings(
+            model_path=jina_model_path,
+            n_ctx=8192,
+            n_batch=512,
+            device="cpu",
         )
 
         # Hakem (CPU)

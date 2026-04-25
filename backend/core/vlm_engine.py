@@ -148,7 +148,7 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=1500,  # Uzun OCR ve içerik dökümleri için 1500 korundu.
+                max_tokens=1024,  # Uzun OCR ve içerik dökümleri için 1500 korundu.
                 temperature=0.0,
                 repeat_penalty=1.20,
                 stop=[

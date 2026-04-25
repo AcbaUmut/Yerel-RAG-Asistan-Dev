@@ -7,7 +7,7 @@ from llama_index.core.node_parser import SentenceSplitter
 
 
 class DocumentParser:
-    def __init__(self, chunk_size: int = 450, chunk_overlap: int = 150):
+    def __init__(self, chunk_size: int = 1024, chunk_overlap: int = 200):
         print("[SİSTEM] DocumentParser (Ayrıştırıcı) başlatılıyor...")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
