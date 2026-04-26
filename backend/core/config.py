@@ -1,27 +1,21 @@
 class AppConfig:
-    # --- MODEL İSİMLERİ ---
     LLM_MODEL_NAME = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
     VLM_MODEL_NAME = "ZwZ-4B-Q4_K_M.gguf"
     VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-F16.gguf"
     EMBED_MODEL_NAME = "jina-embeddings-v5-text-nano-retrieval-f16.gguf"
     RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 
-    # Chunk Ayarları
     CHUNK_SIZE = 1100
     CHUNK_OVERLAP = 200
 
-    # Embedding/Vektörleme (Jina) Ayarları
     EMBED_N_CTX = 8192
 
-    # Reranker (BGE) Ayarları
     RERANKER_TOP_N = 3
 
-    # Ana Dil Modeli (Gemma) Ayarları
     LLM_N_CTX = 4096
     LLM_MAX_TOKENS = 1024
     LLM_TEMPERATURE = 0.1
 
-    # Görsel Dil Modeli (ZwZ-4B) Ayarları
     VLM_N_CTX = 4096
     VLM_MAX_TOKENS = 1024
     VLM_TEMPERATURE = 0.0

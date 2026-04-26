@@ -2,7 +2,7 @@ import base64
 import os
 import time
 
-from core.config import AppConfig  # YENİ: Merkezi Sinir Sistemini içe aktardık
+from core.config import AppConfig
 from llama_cpp import Llama
 from llama_cpp.llama_chat_format import Llava15ChatHandler
 
@@ -13,7 +13,7 @@ class VLMEngine:
         Görsel Dil Modelini (VLM) başlatır.
         İki Aşamalı Mimari (Gözcü Sınıflandırıcı + Uzman Çıkarıcı)
         """
-        # Parametre gelmezse Config'den çek
+
         self.model_path = f"./backend/models/{AppConfig.VLM_MODEL_NAME}"
         self.mmproj_path = f"./backend/models/{AppConfig.VLM_MMPROJ_NAME}"
 
@@ -29,9 +29,7 @@ class VLMEngine:
         self.llm = Llama(
             model_path=self.model_path,
             chat_handler=self.chat_handler,
-            n_ctx=(
-                AppConfig.VLM_N_CTX if AppConfig.VLM_N_CTX is not None else 4096
-            ),  # Config'den çekildi (4096)
+            n_ctx=(AppConfig.VLM_N_CTX if AppConfig.VLM_N_CTX is not None else 4096),
             n_gpu_layers=-1,
             verbose=False,
         )
@@ -68,12 +66,12 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=15,  # Gözcü olduğu için sabit bırakıldı (Sadece 1 kelime üretecek)
+                max_tokens=15,
                 temperature=(
                     AppConfig.VLM_TEMPERATURE
                     if AppConfig.VLM_TEMPERATURE is not None
                     else 0.0
-                ),  # Config'den çekildi
+                ),
             )
             category = response["choices"][0]["message"]["content"].strip().upper()
 
@@ -114,7 +112,7 @@ class VLMEngine:
                 "3. En sona KESİNLİKLE 'Görsel İçeriği:' adında bir bölüm aç ve görselin içindeki tüm metinleri, etiketleri ve anahtar kelimeleri eksiksiz bir liste halinde alt alta yaz."
                 + end_rule
             )
-        else:  # GORSEL_BETİMLEME
+        else:
             return (
                 "Bu görsel bir fotoğraf, çizim, nesne veya sahnedir. "
                 "Görselde genel olarak ne gördüğünü detaylı ve zengin bir dille betimle. "
@@ -131,7 +129,6 @@ class VLMEngine:
 
         total_start = time.time()
 
-        # AŞAMA 1: Sınıflandırma
         print("[VLM] Aşama 1: Gözcü çalışıyor (Sınıflandırma)...")
         cat_start = time.time()
         category = self._classify_image(data_uri)
@@ -139,7 +136,6 @@ class VLMEngine:
         print(f"      Gözcü Çalışmayı Bitirdi! (Süre: {cat_end - cat_start:.2f} sn)")
         print(f"      Tespit edilen tür: {category}")
 
-        # AŞAMA 2: Uzman Çıkarımı
         print("[VLM] Aşama 2: Uzman çalışıyor (Detaylı Analiz)...")
         specialist_prompt = self._get_specialist_prompt(category)
 
@@ -163,23 +159,19 @@ class VLMEngine:
                     AppConfig.VLM_MAX_TOKENS
                     if AppConfig.VLM_MAX_TOKENS is not None
                     else 1024
-                ),  # Config'den çekildi
+                ),
                 temperature=(
                     AppConfig.VLM_TEMPERATURE
                     if AppConfig.VLM_TEMPERATURE is not None
                     else 0.0
-                ),  # Config'den çekildi
+                ),
                 repeat_penalty=1.20,
-                stop=[
-                    "[ANALİZ_BİTTİ]"  # ÖZEL ATEŞKES SİNYALİMİZ
-                ],
+                stop=["[ANALİZ_BİTTİ]"],
             )
             exp_end = time.time()
 
-            # Modelden gelen ham metni alıyoruz
             extracted_text = response["choices"][0]["message"]["content"].strip()
 
-            # Eğer model [ANALİZ_BİTTİ] yazdıysa temizliyoruz
             extracted_text = extracted_text.replace("[ANALİZ_BİTTİ]", "").strip()
 
             print(

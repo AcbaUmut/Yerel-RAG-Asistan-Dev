@@ -8,7 +8,7 @@ from core.vlm_engine import VLMEngine
 
 
 def main():
-    # PDF yolu şimdilik test amaçlı sabit kalıyor
+
     pdf_path = "test.pdf"
 
     print("=== VERİ YUTMA (INGESTION) SİSTEMİ BAŞLATILIYOR ===")
@@ -21,13 +21,11 @@ def main():
 
     print("\n--- DONANIM ORKESTRASYONU: AŞAMA 1 ---")
     try:
-        # DÜZELTME: VLMEngine artık parametresiz çalışıyor, yolları Config'den alıyor!
         vlm_engine = VLMEngine()
     except Exception as e:
         print(f"[HATA] VLM Motoru başlatılamadı: {e}")
         return
 
-    # Chunk limitleri Config'den çekiliyor, varsayılanlar üzerine yazılıyor
     parser_engine = DocumentParser()
 
     chunks = parser_engine.parse(file_path=pdf_path, vlm_engine=vlm_engine)
@@ -38,7 +36,6 @@ def main():
     gc.collect()
     print("[SİSTEM] VRAM başarıyla boşaltıldı. Kutsal 8GB sınırı güvende.\n")
 
-    # VectorStoreEngine de doğrudan Config'den besleniyor
     vector_engine = VectorStoreEngine()
     print(
         "Düğümler Nomic/Jina ile vektörlenip ChromaDB'ye yazılıyor. CPU hızına bağlı olarak sürebilir..."

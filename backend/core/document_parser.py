@@ -24,9 +24,8 @@ class DocumentParser:
             if AppConfig.CHUNK_OVERLAP is not None
             else chunk_overlap
         )
-        self.hf_threshold = hf_threshold  # Eşik değeri (Varsayılan %60 tekrar)
+        self.hf_threshold = hf_threshold
 
-        # Not: Faz 2'de buradaki SentenceSplitter'ı kaldırıp DocStore mimarisine geçeceğiz.
         self.parser = SentenceSplitter(
             chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap
         )
@@ -38,30 +37,25 @@ class DocumentParser:
         """
         total_pages = len(pages)
         if total_pages <= 2:
-            # 1-2 sayfalık belgelerde istatistik çalışmaz, doğrudan birleştir.
             return "\n\n".join([p["text"] for p in pages])
 
         candidate_lines = []
 
-        # 1. Aşama: Her sayfanın başından ve sonundan aday satırları topla
         for page in pages:
             lines = page["text"].split("\n")
-            lines = [line.strip() for line in lines if line.strip()]  # Boşlukları sil
+            lines = [line.strip() for line in lines if line.strip()]
 
             if not lines:
                 continue
 
-            # İlk 3 ve son 3 satırı al (Üstbilgi ve Altbilgi adayları)
             head_candidates = lines[:3]
             tail_candidates = lines[-3:]
 
             candidate_lines.extend(head_candidates)
             candidate_lines.extend(tail_candidates)
 
-        # 2. Aşama: Sıklık analizi yap
         line_counts = Counter(candidate_lines)
 
-        # 3. Aşama: Eşik değerini aşanları "çöp" (stop_lines) olarak işaretle
         stop_lines = set()
         for line, count in line_counts.items():
             if (count / total_pages) >= self.hf_threshold:
@@ -72,7 +66,6 @@ class DocumentParser:
                 f"[SİSTEM] Otonom Temizleyici şu tekrar eden satırları sildi: {stop_lines}"
             )
 
-        # 4. Aşama: Tespit edilen çöpleri sil ve sayfaları birleştir
         cleaned_pages = []
         for page in pages:
             lines = page["text"].split("\n")
@@ -92,10 +85,9 @@ class DocumentParser:
         text = re.sub(
             r"\*\*==> picture \[.*?\] intentionally omitted <==\*\*", "", text
         )
-        # Sadece sayılardan oluşan satırları (sayfa numarası artıkları) temizler
+
         text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
 
-        # Çoklu boş satırları 2 boş satıra indir
         text = re.sub(r"(?:\n[ \t\x0b\f\r\xa0]*){3,}", "\n\n", text)
         return text.strip()
 
@@ -108,7 +100,6 @@ class DocumentParser:
             print("[UYARI] VLM Motoru sağlanmadı. Görseller metne dahil edilmeyecek.")
             return text
 
-        # GÜNCELLENEN KISIM: Kırılgan Regex düzeltildi (İçi dolu parantezleri de okur)
         pattern = r"!\[.*?\]\((.*?)\)"
         matches = list(re.finditer(pattern, text))
 
@@ -151,18 +142,14 @@ class DocumentParser:
 
         print(f"[SİSTEM] Görseller geçici olarak çıkarılıyor: {temp_img_dir}")
 
-        # YENİ EKLENEN KISIM: page_chunks=True ile veriyi sayfa sayfa (liste) olarak alıyoruz
         md_pages = pymupdf4llm.to_markdown(
             doc=file_path, write_images=True, image_path=temp_img_dir, page_chunks=True
         )
 
-        # 1. Otonom Üstbilgi/Altbilgi Temizliği ve Birleştirme
         joined_text = self._remove_frequent_headers_footers(md_pages)
 
-        # 2. Markdown gürültülerini temizle
         clean_text = self._clean_markdown(joined_text)
 
-        # 3. VLM'i devreye sok ve resimlerin yerine analizleri göm
         enriched_text = self._inject_vlm_analysis(clean_text, vlm_engine)
 
         doc = Document(text=enriched_text, metadata={"file_name": file_path})
