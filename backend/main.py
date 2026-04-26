@@ -1,40 +1,42 @@
 import time
 
+from core.config import AppConfig  # YENİ: Ayarları merkeze bağladık
 from core.llm_engine import LLMEngine
 from core.retriever import RetrieverEngine
 
-# Yutma işlemleri zaten yapıldığı için parser ve vector_store importlarını kapattık.
-
 
 def main():
-    model_path = "./backend/models/Turkish-Gemma-9b-T1-Q4_K_M.gguf"  # Dosya adını kontrol et (Nokta yerine tire olabilir)
-
     print("=== YEREL RAG SİSTEMİ BAŞLATILIYOR ===")
 
     # 1. AŞAMA: GERİ ÇAĞIRMA (SADECE CPU VE RAM)
-    # GPU bu aşamada tamamen boşta dinleniyor.
     print("[1/4] Arama Motoru ve Hakem (CPU) başlatılıyor...")
     start_time = time.time()
+
+    # RetrieverEngine artık parametresiz, kendi içinde Config'e bakıyor
     retriever = RetrieverEngine()
     print(f"      Sistem hazır. (Süre: {time.time() - start_time:.2f} sn)\n")
 
     question = "C dili nedir?"
-
     print(f"Soru: {question}\n")
 
     print("[2/4] Veritabanında arama yapılıyor ve Hakem süzgecinden geçiriliyor...")
     check_time = time.time()
-    context_text = retriever.get_relevant_context(question, top_n=3, threshold=0.0)
+
+    # Senin kararın: top_n değerini main içinden Retriever'a besliyoruz!
+    context_text = retriever.get_relevant_context(
+        query=question, top_n=AppConfig.RERANKER_TOP_N, threshold=0.0
+    )
     print(f"      Bağlam süzüldü. (Süre: {time.time() - check_time:.2f} sn)\n")
 
     # 2. AŞAMA: LLM MOTORUNU AYAĞA KALDIRMA (GPU İŞGALİ BAŞLIYOR)
-    # Veriyi bulduk, temizledik, artık cevap üretmek için ekran kartını devreye sokuyoruz.
-    print("[3/4] Gemma Q4_K_M Modeli VRAM'e yükleniyor...")
+    print("[3/4] Gemma Modeli VRAM'e yükleniyor...")
     check_time = time.time()
-    llm = LLMEngine(model_path=model_path)
+
+    # DÜZELTME: LLMEngine artık parametre almıyor, yolu kendisi Config'den buluyor
+    llm = LLMEngine()
     print(f"      Gemma yüklendi. (Süre: {time.time() - check_time:.2f} sn)\n")
 
-    print("\n[4/4]Gemma düşünüyor ve yanıt üretiyor...")
+    print("\n[4/4] Gemma düşünüyor ve yanıt üretiyor...")
     print("=" * 60)
 
     generation_start = time.time()
