@@ -1,23 +1,29 @@
 import os
 
+from core.config import AppConfig  # YENİ: Merkezi Sinir Sistemini içe aktardık
 from langchain_community.llms import LlamaCpp
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 
 
 class LLMEngine:
-    def __init__(self, model_path: str):
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model dosyası bulunamadı: {model_path}")
+    # Parametre verilmezse Config'den almasını sağladık
+    def __init__(self):
+        self.model_path = AppConfig.LLM_MODEL_PATH
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model dosyası bulunamadı: {self.model_path}")
+
+        print("[SİSTEM] LLM Motoru (Gemma) başlatılıyor...")
 
         # 1. MOTOR KURULUMU: TAM GPU HAKİMİYETİ
         self.llm = LlamaCpp(
-            model_path=model_path,
-            temperature=0.1,
-            max_tokens=1024,  # Düşünme faslı uzun süreceği için maksimum token artırıldı.
-            n_ctx=4096,  # Genişletilmiş bağlam ve düşünme penceresi.
+            model_path=self.model_path,
+            temperature=AppConfig.LLM_TEMPERATURE,  # Config'den çekildi
+            max_tokens=AppConfig.LLM_MAX_TOKENS,  # Config'den çekildi
+            n_ctx=AppConfig.LLM_N_CTX,  # Config'den çekildi
             n_gpu_layers=-1,  # Modelin TAMAMI 8GB VRAM'e yükleniyor. PCIe darboğazı iptal.
-            n_batch=512,
+            n_batch=512,  # Config dışı, sabit tutuldu
             f16_kv=True,  # 4096 tokenın VRAM'e sığması için KV önbelleği 16-bit'te tutulmalı.
             repeat_penalty=1.1,  # Cosmos ekibinin önerisi: Sonsuz döngü/tekrar engelleme.
             verbose=False,

@@ -1,4 +1,5 @@
 import chromadb
+from core.config import AppConfig  # YENİ: Merkezi Sinir Sistemini içe aktardık
 from langchain_community.embeddings import LlamaCppEmbeddings
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.embeddings.langchain import LangchainEmbedding
@@ -8,28 +9,24 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 class VectorStoreEngine:
     def __init__(
         self,
-        persist_dir: str = "./backend/chroma_db",
-        collection_name: str = "tez_koleksiyonu",
+        collection_name: str = "tez_koleksiyonu",  # Senin kararın: Varsayılan olarak kaldı
     ):
         """
         Vektör veritabanı motorunu ve yerleştirme (embedding) modelini CPU üzerinde başlatır.
         """
-        print(f"[SİSTEM] VectorStoreEngine başlatılıyor... Kayıt dizini: {persist_dir}")
-        self.persist_dir = persist_dir
+        self.persist_dir = AppConfig.CHROMA_DB_DIR
         self.collection_name = collection_name
 
-        # 1. Aşama: Embedding Modelinin Sabitlenmesi (Jina V5 Nano F16 GGUF)
-        # KENDİ DOSYA ADINA GÖRE BURAYI DÜZENLE
-        jina_model_path = (
-            "./backend/models/jina-embeddings-v5-text-nano-retrieval-f16.gguf"
+        print(
+            f"[SİSTEM] VectorStoreEngine başlatılıyor... Kayıt dizini: {self.persist_dir}"
         )
 
         print("[SİSTEM] Jina V5 Nano GGUF (CPU) modeli başlatılıyor...")
         lc_embed_model = LlamaCppEmbeddings(
-            model_path=jina_model_path,
-            n_ctx=8192,  # Jina'nın devasa 8K sınırı
-            n_batch=512,  # İşlemcinin tek seferde yutacağı miktar
-            device="cpu",
+            model_path=AppConfig.EMBED_MODEL_PATH,  # Config'den çekildi
+            n_ctx=AppConfig.EMBED_N_CTX,  # Config'den çekildi (8192)
+            n_batch=512,  # Config dışı, sabit tutuldu
+            device="cpu",  # Donanım kısıtı, değişmez
         )
 
         # Langchain embedding'ini LlamaIndex'in anlayacağı formata çeviriyoruz

@@ -2,29 +2,34 @@ import base64
 import os
 import time
 
+from core.config import AppConfig  # YENİ: Merkezi Sinir Sistemini içe aktardık
 from llama_cpp import Llama
 from llama_cpp.llama_chat_format import Llava15ChatHandler
 
 
 class VLMEngine:
-    def __init__(self, model_path: str, mmproj_path: str):
+    def __init__(self):
         """
         Görsel Dil Modelini (VLM) başlatır.
         İki Aşamalı Mimari (Gözcü Sınıflandırıcı + Uzman Çıkarıcı)
         """
-        if not os.path.exists(model_path) or not os.path.exists(mmproj_path):
+        # Parametre gelmezse Config'den çek
+        self.model_path = AppConfig.VLM_MODEL_PATH
+        self.mmproj_path = AppConfig.VLM_MMPROJ_PATH
+
+        if not os.path.exists(self.model_path) or not os.path.exists(self.mmproj_path):
             raise FileNotFoundError(
                 "[HATA] VLM veya mmproj model dosyaları bulunamadı!"
             )
 
         print("[SİSTEM] VLM Motoru (ZwZ-4B) VRAM'e yükleniyor...")
 
-        self.chat_handler = Llava15ChatHandler(clip_model_path=mmproj_path)
+        self.chat_handler = Llava15ChatHandler(clip_model_path=self.mmproj_path)
 
         self.llm = Llama(
-            model_path=model_path,
+            model_path=self.model_path,
             chat_handler=self.chat_handler,
-            n_ctx=4096,  # 8192'den 4096'ya DÜŞÜRÜLDÜ (Resim ~2500, Çıktı ~1000 = 3500 güvenli alan)
+            n_ctx=AppConfig.VLM_N_CTX,  # Config'den çekildi (4096)
             n_gpu_layers=-1,
             verbose=False,
         )
@@ -61,8 +66,8 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=15,
-                temperature=0.0,
+                max_tokens=15,  # Gözcü olduğu için sabit bırakıldı (Sadece 1 kelime üretecek)
+                temperature=AppConfig.VLM_TEMPERATURE,  # Config'den çekildi
             )
             category = response["choices"][0]["message"]["content"].strip().upper()
 
@@ -148,8 +153,8 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=1024,  # Uzun OCR ve içerik dökümleri için 1500 korundu.
-                temperature=0.0,
+                max_tokens=AppConfig.VLM_MAX_TOKENS,  # Config'den çekildi
+                temperature=AppConfig.VLM_TEMPERATURE,  # Config'den çekildi
                 repeat_penalty=1.20,
                 stop=[
                     "[ANALİZ_BİTTİ]"  # ÖZEL ATEŞKES SİNYALİMİZ

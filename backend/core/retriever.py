@@ -1,37 +1,41 @@
+from core.config import AppConfig  # YENİ: Merkezi Sinir Sistemini içe aktardık
 from langchain_chroma import Chroma
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_community.embeddings import LlamaCppEmbeddings
 
 
 class RetrieverEngine:
-    def __init__(
-        self, persist_dir="./backend/chroma_db", collection_name="tez_koleksiyonu"
-    ):
+    def __init__(self, collection_name: str = "tez_koleksiyonu"):
         """
         Modelleri sadece bu sınıf (class) çağrıldığında RAM'e yükler. Global israfı önler.
         """
+        # Parametre gelmezse Config'den çek
+        self.persist_dir = AppConfig.CHROMA_DB_DIR
+        self.collection_name = (
+            collection_name  # Senin kararınla varsayılan olarak kaldı
+        )
+
         print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
 
         # Vektörleyici (Jina V5 Nano GGUF - CPU)
-        jina_model_path = "./backend/models/jina-embeddings-v5-text-nano-retrieval-f16.gguf"  # Kendi dosya adına göre düzenle
-
         self.embeddings = LlamaCppEmbeddings(
-            model_path=jina_model_path,
-            n_ctx=8192,
-            n_batch=512,
-            device="cpu",
+            model_path=AppConfig.EMBED_MODEL_PATH,  # Config'den çekildi
+            n_ctx=AppConfig.EMBED_N_CTX,  # Config'den çekildi (8192)
+            n_batch=512,  # Config dışı, sabit tutuldu
+            device="cpu",  # Donanım kısıtı, kesinlikle değişmez
         )
 
         # Hakem (CPU)
         self.bge_model = HuggingFaceCrossEncoder(
-            model_name="BAAI/bge-reranker-v2-m3", model_kwargs={"device": "cpu"}
+            model_name=AppConfig.RERANKER_MODEL_NAME,  # Config'den çekildi
+            model_kwargs={"device": "cpu"},  # Donanım kısıtı, kesinlikle değişmez
         )
 
         # Veritabanı Bağlantısı
         self.vectorstore = Chroma(
-            persist_directory=persist_dir,
+            persist_directory=self.persist_dir,
             embedding_function=self.embeddings,
-            collection_name=collection_name,
+            collection_name=self.collection_name,
         )
 
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
@@ -59,9 +63,10 @@ class RetrieverEngine:
             doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
         ]
 
-        # 4. LLM İçin Tek Parça Metne Çevir (Kritik Düzeltme)
-        # Gemma listeleri değil, düz metni (string) okur. Dökümanları uç uca ekleyerek tek metin yapıyoruz.
-        best_docs = filtered_docs[:top_n]
+        # 4. LLM İçin Tek Parça Metne Çevir
+        best_docs = filtered_docs[
+            :top_n
+        ]  # Config'den gelen top_n değeri ile dilimlendi
         context_string = "\n\n".join([doc.page_content.strip() for doc in best_docs])
 
         return context_string
