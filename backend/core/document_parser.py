@@ -16,8 +16,14 @@ class DocumentParser:
         hf_threshold: float = 0.6,
     ):
         print("[SİSTEM] DocumentParser (Ayrıştırıcı) başlatılıyor...")
-        self.chunk_size = AppConfig.CHUNK_SIZE or chunk_size
-        self.chunk_overlap = AppConfig.CHUNK_OVERLAP or chunk_overlap
+        self.chunk_size = (
+            AppConfig.CHUNK_SIZE if AppConfig.CHUNK_SIZE is not None else chunk_size
+        )
+        self.chunk_overlap = (
+            AppConfig.CHUNK_OVERLAP
+            if AppConfig.CHUNK_OVERLAP is not None
+            else chunk_overlap
+        )
         self.hf_threshold = hf_threshold  # Eşik değeri (Varsayılan %60 tekrar)
 
         # Not: Faz 2'de buradaki SentenceSplitter'ı kaldırıp DocStore mimarisine geçeceğiz.

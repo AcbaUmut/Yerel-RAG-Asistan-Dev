@@ -25,7 +25,9 @@ class VectorStoreEngine:
         print("[SİSTEM] Jina V5 Nano GGUF (CPU) modeli başlatılıyor...")
         lc_embed_model = LlamaCppEmbeddings(
             model_path=f"./backend/models/{AppConfig.EMBED_MODEL_NAME}",
-            n_ctx=AppConfig.EMBED_N_CTX or 8192,  # Config'den çekildi (8192)
+            n_ctx=(
+                AppConfig.EMBED_N_CTX if AppConfig.EMBED_N_CTX is not None else 8192
+            ),  # Config'den çekildi (8192)
             n_batch=512,  # Config dışı, sabit tutuldu
             device="cpu",  # Donanım kısıtı, değişmez
         )

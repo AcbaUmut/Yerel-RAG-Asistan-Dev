@@ -29,7 +29,9 @@ class VLMEngine:
         self.llm = Llama(
             model_path=self.model_path,
             chat_handler=self.chat_handler,
-            n_ctx=AppConfig.VLM_N_CTX or 4096,  # Config'den çekildi (4096)
+            n_ctx=(
+                AppConfig.VLM_N_CTX if AppConfig.VLM_N_CTX is not None else 4096
+            ),  # Config'den çekildi (4096)
             n_gpu_layers=-1,
             verbose=False,
         )
@@ -67,7 +69,11 @@ class VLMEngine:
                     },
                 ],
                 max_tokens=15,  # Gözcü olduğu için sabit bırakıldı (Sadece 1 kelime üretecek)
-                temperature=AppConfig.VLM_TEMPERATURE or 0.0,  # Config'den çekildi
+                temperature=(
+                    AppConfig.VLM_TEMPERATURE
+                    if AppConfig.VLM_TEMPERATURE is not None
+                    else 0.0
+                ),  # Config'den çekildi
             )
             category = response["choices"][0]["message"]["content"].strip().upper()
 
@@ -153,8 +159,16 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=AppConfig.VLM_MAX_TOKENS or 1024,  # Config'den çekildi
-                temperature=AppConfig.VLM_TEMPERATURE or 0.0,  # Config'den çekildi
+                max_tokens=(
+                    AppConfig.VLM_MAX_TOKENS
+                    if AppConfig.VLM_MAX_TOKENS is not None
+                    else 1024
+                ),  # Config'den çekildi
+                temperature=(
+                    AppConfig.VLM_TEMPERATURE
+                    if AppConfig.VLM_TEMPERATURE is not None
+                    else 0.0
+                ),  # Config'den çekildi
                 repeat_penalty=1.20,
                 stop=[
                     "[ANALİZ_BİTTİ]"  # ÖZEL ATEŞKES SİNYALİMİZ

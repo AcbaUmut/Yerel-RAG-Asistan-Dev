@@ -19,9 +19,19 @@ class LLMEngine:
         # 1. MOTOR KURULUMU: TAM GPU HAKİMİYETİ
         self.llm = LlamaCpp(
             model_path=self.model_path,
-            temperature=AppConfig.LLM_TEMPERATURE or 0.1,  # Config'den çekildi
-            max_tokens=AppConfig.LLM_MAX_TOKENS or 1024,  # Config'den çekildi
-            n_ctx=AppConfig.LLM_N_CTX or 4096,  # Config'den çekildi
+            temperature=(
+                AppConfig.LLM_TEMPERATURE
+                if AppConfig.LLM_TEMPERATURE is not None
+                else 0.1
+            ),  # Config'den çekildi
+            max_tokens=(
+                AppConfig.LLM_MAX_TOKENS
+                if AppConfig.LLM_MAX_TOKENS is not None
+                else 1024
+            ),  # Config'den çekildi
+            n_ctx=(
+                AppConfig.LLM_N_CTX if AppConfig.LLM_N_CTX is not None else 4096
+            ),  # Config'den çekildi
             n_gpu_layers=-1,  # Modelin TAMAMI 8GB VRAM'e yükleniyor. PCIe darboğazı iptal.
             n_batch=512,  # Config dışı, sabit tutuldu
             f16_kv=True,  # 4096 tokenın VRAM'e sığması için KV önbelleği 16-bit'te tutulmalı.
