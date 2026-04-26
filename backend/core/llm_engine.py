@@ -9,7 +9,7 @@ from langchain_core.prompts import PromptTemplate
 class LLMEngine:
     # Parametre verilmezse Config'den almasını sağladık
     def __init__(self):
-        self.model_path = AppConfig.LLM_MODEL_PATH
+        self.model_path = f"./backend/models/{AppConfig.LLM_MODEL_NAME}"
 
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Model dosyası bulunamadı: {self.model_path}")
@@ -19,9 +19,9 @@ class LLMEngine:
         # 1. MOTOR KURULUMU: TAM GPU HAKİMİYETİ
         self.llm = LlamaCpp(
             model_path=self.model_path,
-            temperature=AppConfig.LLM_TEMPERATURE,  # Config'den çekildi
-            max_tokens=AppConfig.LLM_MAX_TOKENS,  # Config'den çekildi
-            n_ctx=AppConfig.LLM_N_CTX,  # Config'den çekildi
+            temperature=AppConfig.LLM_TEMPERATURE or 0.1,  # Config'den çekildi
+            max_tokens=AppConfig.LLM_MAX_TOKENS or 1024,  # Config'den çekildi
+            n_ctx=AppConfig.LLM_N_CTX or 4096,  # Config'den çekildi
             n_gpu_layers=-1,  # Modelin TAMAMI 8GB VRAM'e yükleniyor. PCIe darboğazı iptal.
             n_batch=512,  # Config dışı, sabit tutuldu
             f16_kv=True,  # 4096 tokenın VRAM'e sığması için KV önbelleği 16-bit'te tutulmalı.

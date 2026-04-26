@@ -2,7 +2,6 @@ import gc
 import os
 import time
 
-from core.config import AppConfig  # YENİ: Ayarları merkeze bağladık
 from core.document_parser import DocumentParser
 from core.vector_store import VectorStoreEngine
 from core.vlm_engine import VLMEngine
@@ -29,9 +28,7 @@ def main():
         return
 
     # Chunk limitleri Config'den çekiliyor, varsayılanlar üzerine yazılıyor
-    parser_engine = DocumentParser(
-        chunk_size=AppConfig.CHUNK_SIZE, chunk_overlap=AppConfig.CHUNK_OVERLAP
-    )
+    parser_engine = DocumentParser()
 
     chunks = parser_engine.parse(file_path=pdf_path, vlm_engine=vlm_engine)
 

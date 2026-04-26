@@ -10,7 +10,7 @@ class RetrieverEngine:
         Modelleri sadece bu sınıf (class) çağrıldığında RAM'e yükler. Global israfı önler.
         """
         # Parametre gelmezse Config'den çek
-        self.persist_dir = AppConfig.CHROMA_DB_DIR
+        self.persist_dir = "./backend/chroma_db"
         self.collection_name = (
             collection_name  # Senin kararınla varsayılan olarak kaldı
         )
@@ -19,8 +19,8 @@ class RetrieverEngine:
 
         # Vektörleyici (Jina V5 Nano GGUF - CPU)
         self.embeddings = LlamaCppEmbeddings(
-            model_path=AppConfig.EMBED_MODEL_PATH,  # Config'den çekildi
-            n_ctx=AppConfig.EMBED_N_CTX,  # Config'den çekildi (8192)
+            model_path=f"./backend/models/{AppConfig.EMBED_MODEL_NAME}",
+            n_ctx=AppConfig.EMBED_N_CTX or 8192,  # Config'den çekildi (8192)
             n_batch=512,  # Config dışı, sabit tutuldu
             device="cpu",  # Donanım kısıtı, kesinlikle değişmez
         )

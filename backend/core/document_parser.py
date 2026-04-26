@@ -3,6 +3,7 @@ import re
 from collections import Counter
 
 import pymupdf4llm
+from core.config import AppConfig
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
 
@@ -15,8 +16,8 @@ class DocumentParser:
         hf_threshold: float = 0.6,
     ):
         print("[SİSTEM] DocumentParser (Ayrıştırıcı) başlatılıyor...")
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.chunk_size = AppConfig.CHUNK_SIZE or chunk_size
+        self.chunk_overlap = AppConfig.CHUNK_OVERLAP or chunk_overlap
         self.hf_threshold = hf_threshold  # Eşik değeri (Varsayılan %60 tekrar)
 
         # Not: Faz 2'de buradaki SentenceSplitter'ı kaldırıp DocStore mimarisine geçeceğiz.

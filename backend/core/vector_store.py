@@ -9,12 +9,13 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 class VectorStoreEngine:
     def __init__(
         self,
+        persist_dir: str = "./backend/chroma_db",
         collection_name: str = "tez_koleksiyonu",  # Senin kararın: Varsayılan olarak kaldı
     ):
         """
         Vektör veritabanı motorunu ve yerleştirme (embedding) modelini CPU üzerinde başlatır.
         """
-        self.persist_dir = AppConfig.CHROMA_DB_DIR
+        self.persist_dir = persist_dir
         self.collection_name = collection_name
 
         print(
@@ -23,8 +24,8 @@ class VectorStoreEngine:
 
         print("[SİSTEM] Jina V5 Nano GGUF (CPU) modeli başlatılıyor...")
         lc_embed_model = LlamaCppEmbeddings(
-            model_path=AppConfig.EMBED_MODEL_PATH,  # Config'den çekildi
-            n_ctx=AppConfig.EMBED_N_CTX,  # Config'den çekildi (8192)
+            model_path=f"./backend/models/{AppConfig.EMBED_MODEL_NAME}",
+            n_ctx=AppConfig.EMBED_N_CTX or 8192,  # Config'den çekildi (8192)
             n_batch=512,  # Config dışı, sabit tutuldu
             device="cpu",  # Donanım kısıtı, değişmez
         )
