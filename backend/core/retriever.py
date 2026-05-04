@@ -1,28 +1,27 @@
 from core.config import AppConfig
+from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-from langchain_community.embeddings import LlamaCppEmbeddings
 
 
 class RetrieverEngine:
     def __init__(self, collection_name: str = "tez_koleksiyonu"):
-        """
-        Modelleri sadece bu sınıf (class) çağrıldığında RAM'e yükler. Global israfı önler.
-        """
-
         self.persist_dir = "./backend/chroma_db"
         self.collection_name = collection_name
 
         print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
 
-        self.embeddings = LlamaCppEmbeddings(
-            model_path=f"./backend/models/{AppConfig.EMBED_MODEL_NAME}",
-            n_ctx=(
-                AppConfig.EMBED_N_CTX if AppConfig.EMBED_N_CTX is not None else 8192
-            ),
-            n_batch=512,
-            device="cpu",
-        )
+        # LlamaIndex embedding'i LangChain Chroma için adapter'a sar
+        jina = JinaEmbeddings()
+
+        class _LCAdapter:
+            """JinaEmbeddings'i LangChain embedding interface'ine sarar."""
+
+            def embed_documents(self, texts):
+                return jina._get_text_embeddings(texts)
+
+            def embed_query(self, text):
+                return jina._get_query_embedding(text)
 
         self.bge_model = HuggingFaceCrossEncoder(
             model_name=AppConfig.RERANKER_MODEL_NAME,
@@ -31,14 +30,13 @@ class RetrieverEngine:
 
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
-            embedding_function=self.embeddings,
+            embedding_function=_LCAdapter(),
             collection_name=self.collection_name,
         )
 
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
 
     def get_relevant_context(self, query: str, top_n: int = 3, threshold: float = 0.0):
-
         raw_docs = self.base_retriever.invoke(query)
         if not raw_docs:
             return ""
@@ -57,6 +55,4 @@ class RetrieverEngine:
         ]
 
         best_docs = filtered_docs[:top_n]
-        context_string = "\n\n".join([doc.page_content.strip() for doc in best_docs])
-
-        return context_string
+        return "\n\n".join([doc.page_content.strip() for doc in best_docs])
