@@ -4,7 +4,7 @@ import time
 
 from core.config import AppConfig
 from llama_cpp import Llama
-from llama_cpp.llama_chat_format import Llava15ChatHandler
+from llama_cpp.llama_chat_format import Qwen3VLChatHandler
 
 
 class VLMEngine:
@@ -24,7 +24,7 @@ class VLMEngine:
 
         print("[SİSTEM] VLM Motoru (ZwZ-4B) VRAM'e yükleniyor...")
 
-        self.chat_handler = Llava15ChatHandler(clip_model_path=self.mmproj_path)
+        self.chat_handler = Qwen3VLChatHandler(clip_model_path=self.mmproj_path)
 
         self.llm = Llama(
             model_path=self.model_path,

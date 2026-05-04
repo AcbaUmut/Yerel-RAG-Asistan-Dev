@@ -38,7 +38,7 @@ def main():
 
     vector_engine = VectorStoreEngine()
     print(
-        "Düğümler Nomic/Jina ile vektörlenip ChromaDB'ye yazılıyor. CPU hızına bağlı olarak sürebilir..."
+        "Düğümler Jina ile vektörlenip ChromaDB'ye yazılıyor. CPU hızına bağlı olarak sürebilir..."
     )
 
     vector_engine.add_nodes(nodes=chunks, file_name=pdf_path)
