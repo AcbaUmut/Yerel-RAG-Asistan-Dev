@@ -3,7 +3,7 @@ class AppConfig:
     VLM_MODEL_NAME = "ZwZ-4B-Q4_K_M.gguf"
     VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-F16.gguf"
     # EMBED_MODEL_NAME = "jina-embeddings-v5-text-nano-retrieval-f16.gguf"
-    RERANKER_MODEL_NAME = "jina-reranker-v3"
+    RERANKER_MODEL_NAME = "bge-reranker-v2-m3"
 
     CHUNK_SIZE = 1100
     CHUNK_OVERLAP = 200

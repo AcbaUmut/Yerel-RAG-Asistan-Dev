@@ -1,9 +1,9 @@
 import time
 
-import torch
+from core.config import AppConfig
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
-from transformers import AutoModel
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 
 
 class RetrieverEngine:
@@ -16,48 +16,44 @@ class RetrieverEngine:
         jina = JinaEmbeddings()
 
         class _LCAdapter:
-            """JinaEmbeddings'i LangChain embedding interface'ine sarar."""
-
             def embed_documents(self, texts):
                 return jina._get_text_embeddings(texts)
 
             def embed_query(self, text):
                 return jina._get_query_embedding(text)
 
-        print("[SİSTEM] Jina Reranker v3 yükleniyor (CPU)...")
-        self.reranker = AutoModel.from_pretrained(
-            "./backend/models/jina-reranker-v3",
-            dtype=torch.float32,
-            trust_remote_code=True,
-            local_files_only=True,
+        self.bge_model = HuggingFaceCrossEncoder(
+            model_name=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
+            model_kwargs={"device": "cpu"},
         )
-        self.reranker.eval()
-        print("[SİSTEM] Jina Reranker v3 başarıyla yüklendi.")
 
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
             embedding_function=_LCAdapter(),
             collection_name=self.collection_name,
         )
-
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
 
     def get_relevant_context(self, query: str, top_n: int = 3, threshold: float = 0.0):
-
         raw_docs = self.base_retriever.invoke(query)
         if not raw_docs:
             return ""
 
         temp_time = time.time()
 
-        documents = [doc.page_content for doc in raw_docs]
-
-        # Listwise reranking — tüm belgeler tek seferde gönderiliyor
-        results = self.reranker.rerank(query, documents, top_n=top_n)
+        pairs = [[query, doc.page_content] for doc in raw_docs]
+        scores = self.bge_model.score(pairs)
 
         print(f"\nReranker süresi: {time.time() - temp_time:.2f} sn")
 
-        # Threshold filtresi
-        filtered = [r for r in results if r["relevance_score"] >= threshold]
+        for doc, score in zip(raw_docs, scores):
+            doc.metadata["relevance_score"] = float(score)
 
-        return "\n\n".join([r["document"].strip() for r in filtered])
+        sorted_docs = sorted(
+            raw_docs, key=lambda x: x.metadata["relevance_score"], reverse=True
+        )
+        filtered_docs = [
+            doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
+        ]
+        best_docs = filtered_docs[:top_n]
+        return "\n\n".join([doc.page_content.strip() for doc in best_docs])
