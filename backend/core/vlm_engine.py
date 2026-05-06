@@ -127,8 +127,6 @@ class VLMEngine:
         print(f"\n[VLM] Görsel analiz ediliyor: {os.path.basename(image_path)}")
         data_uri = self._image_to_base64_data_uri(image_path)
 
-        total_start = time.time()
-
         print("[VLM] Aşama 1: Gözcü çalışıyor (Sınıflandırma)...")
         cat_start = time.time()
         category = self._classify_image(data_uri)
@@ -177,7 +175,6 @@ class VLMEngine:
             print(
                 f"      Uzman Çalışmayı Bitirdi! (Süre: {exp_end - exp_start:.2f} sn)"
             )
-            print(f"      [Toplam VLM İşlemi: {exp_end - total_start:.2f} sn]\n")
 
             return f"--- [GÖRSEL TÜRÜ: {category}] ---\n{extracted_text}"
 

@@ -9,6 +9,7 @@ from core.vlm_engine import VLMEngine
 
 def main():
 
+    start_time = time.time()
     pdf_path = "test.pdf"
 
     print("=== VERİ YUTMA (INGESTION) SİSTEMİ BAŞLATILIYOR ===")
@@ -16,8 +17,6 @@ def main():
     if not os.path.exists(pdf_path):
         print(f"HATA: {pdf_path} dosyası bulunamadı!")
         return
-
-    start_time = time.time()
 
     print("\n--- DONANIM ORKESTRASYONU: AŞAMA 1 ---")
     try:
@@ -29,6 +28,10 @@ def main():
     parser_engine = DocumentParser()
 
     chunks = parser_engine.parse(file_path=pdf_path, vlm_engine=vlm_engine)
+
+    print(
+        f"\n=== DOSYA OKUNDU! (Toplam Süre: {time.time() - start_time:.2f} sn) ===\n\n"
+    )
 
     print("\n--- DONANIM ORKESTRASYONU: AŞAMA 2 ---")
     vlm_engine.unload()

@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from collections import Counter
 
 import pymupdf4llm
@@ -110,7 +111,7 @@ class DocumentParser:
         print(
             f"[SİSTEM] Dokümanda {len(matches)} adet görsel bulundu. VLM enjeksiyonu başlıyor..."
         )
-
+        start_time = time.time()
         for match in matches:
             original_tag = match.group(0)
             image_path = match.group(1)
@@ -124,6 +125,7 @@ class DocumentParser:
             else:
                 text = text.replace(original_tag, "")
 
+        print(f"      [Toplam VLM İşlemi: {time.time() - start_time:.2f} sn]\n")
         print("[SİSTEM] VLM Enjeksiyonu başarıyla tamamlandı.")
         return text
 
