@@ -6,7 +6,7 @@ from core.document_parser import DocumentParser
 from core.vector_store import VectorStoreEngine
 from core.vlm_engine import VLMEngine
 
-os.environ["HF_HUB_OFFLINE"] = "1"
+# os.environ["HF_HUB_OFFLINE"] = "1"
 
 
 def main():

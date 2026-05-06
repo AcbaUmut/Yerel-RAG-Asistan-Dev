@@ -1,9 +1,9 @@
 import time
 
-from core.config import AppConfig
+import torch
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from transformers import AutoModel
 
 
 class RetrieverEngine:
@@ -13,7 +13,6 @@ class RetrieverEngine:
 
         print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
 
-        # LlamaIndex embedding'i LangChain Chroma için adapter'a sar
         jina = JinaEmbeddings()
 
         class _LCAdapter:
@@ -25,10 +24,15 @@ class RetrieverEngine:
             def embed_query(self, text):
                 return jina._get_query_embedding(text)
 
-        self.bge_model = HuggingFaceCrossEncoder(
-            model_name=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
-            model_kwargs={"device": "cpu"},
+        print("[SİSTEM] Jina Reranker v3 yükleniyor (CPU)...")
+        self.reranker = AutoModel.from_pretrained(
+            "./backend/models/jina-reranker-v3",
+            dtype=torch.float32,
+            trust_remote_code=True,
+            local_files_only=True,
         )
+        self.reranker.eval()
+        print("[SİSTEM] Jina Reranker v3 başarıyla yüklendi.")
 
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
@@ -46,20 +50,14 @@ class RetrieverEngine:
 
         temp_time = time.time()
 
-        pairs = [[query, doc.page_content] for doc in raw_docs]
-        scores = self.bge_model.score(pairs)
+        documents = [doc.page_content for doc in raw_docs]
 
-        print(f"\n\nReranker 3 sonuc suresi!!!{time.time() - temp_time}")
+        # Listwise reranking — tüm belgeler tek seferde gönderiliyor
+        results = self.reranker.rerank(query, documents, top_n=top_n)
 
-        for doc, score in zip(raw_docs, scores):
-            doc.metadata["relevance_score"] = float(score)
+        print(f"\nReranker süresi: {time.time() - temp_time:.2f} sn")
 
-        sorted_docs = sorted(
-            raw_docs, key=lambda x: x.metadata["relevance_score"], reverse=True
-        )
-        filtered_docs = [
-            doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
-        ]
+        # Threshold filtresi
+        filtered = [r for r in results if r["relevance_score"] >= threshold]
 
-        best_docs = filtered_docs[:top_n]
-        return "\n\n".join([doc.page_content.strip() for doc in best_docs])
+        return "\n\n".join([r["document"].strip() for r in filtered])
