@@ -1,3 +1,5 @@
+import time
+
 from core.config import AppConfig
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
@@ -24,7 +26,7 @@ class RetrieverEngine:
                 return jina._get_query_embedding(text)
 
         self.bge_model = HuggingFaceCrossEncoder(
-            model_name=AppConfig.RERANKER_MODEL_NAME,
+            model_name=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
             model_kwargs={"device": "cpu"},
         )
 
@@ -37,12 +39,17 @@ class RetrieverEngine:
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
 
     def get_relevant_context(self, query: str, top_n: int = 3, threshold: float = 0.0):
+
         raw_docs = self.base_retriever.invoke(query)
         if not raw_docs:
             return ""
 
+        temp_time = time.time()
+
         pairs = [[query, doc.page_content] for doc in raw_docs]
         scores = self.bge_model.score(pairs)
+
+        print(f"\n\nReranker 3 sonuc suresi!!!{time.time() - temp_time}")
 
         for doc, score in zip(raw_docs, scores):
             doc.metadata["relevance_score"] = float(score)

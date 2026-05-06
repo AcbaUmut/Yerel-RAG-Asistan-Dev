@@ -1,0 +1,15 @@
+chromadb
+langchain_chroma
+langchain_community
+langchain_core
+llama_index
+llama-index-core
+llama-index-vector-stores-chroma
+numpy
+pymupdf4llm
+transformers
+optimum[onnxruntime]
+torch
+sentence-transformers
+langchain-huggingface
+ninja

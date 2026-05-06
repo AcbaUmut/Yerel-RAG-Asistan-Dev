@@ -1,8 +1,11 @@
+import os
 import time
 
 from core.config import AppConfig
 from core.llm_engine import LLMEngine
 from core.retriever import RetrieverEngine
+
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 
 def main():

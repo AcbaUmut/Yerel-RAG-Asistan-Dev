@@ -1,40 +1,65 @@
 from typing import List
 
 import chromadb
+import torch
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from sentence_transformers import SentenceTransformer
+from optimum.onnxruntime import ORTModelForFeatureExtraction
+from transformers import AutoTokenizer
 
 
 class JinaEmbeddings(BaseEmbedding):
-    """LlamaIndex native embedding — LangchainEmbedding wrapper'ı bypass eder."""
-
     class Config:
         arbitrary_types_allowed = True
 
     def __init__(self):
-        super().__init__(model_name="jina-v5-nano")
-        print("[SİSTEM] Jina V5 Nano (local/CPU) yükleniyor...")
-        self._model = SentenceTransformer(
-            "./backend/models/jina-v5-nano",
+        super().__init__(model_name="jina-v5-nano-onnx")
+        print("[SİSTEM] Jina V5 Nano ONNX (CPU) yükleniyor...")
+        model_dir = "./backend/models/jina-v5-nano"
+
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_dir, trust_remote_code=True, local_files_only=True
+        )
+        # Resmi dokümantasyondaki kullanım — optimum wrapper
+        self._model = ORTModelForFeatureExtraction.from_pretrained(
+            model_dir,
+            subfolder="onnx",
+            file_name="model.onnx",
+            provider="CPUExecutionProvider",
             trust_remote_code=True,
-            device="cpu",
             local_files_only=True,
         )
-        print("[SİSTEM] Jina V5 Nano başarıyla yüklendi.")
+        print("[SİSTEM] Jina V5 Nano ONNX başarıyla yüklendi.")
+
+    def _encode(self, texts: List[str]) -> List[List[float]]:
+        inputs = self._tokenizer(
+            texts, padding=True, truncation=True, max_length=512, return_tensors="pt"
+        )
+        # Resmi dokümantasyondaki pooling — last-token pooling
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+
+        last_hidden = outputs.last_hidden_state
+        seq_lengths = inputs["attention_mask"].sum(dim=1) - 1
+        embeddings = last_hidden[torch.arange(last_hidden.size(0)), seq_lengths]
+
+        # L2 normalize
+        norms = embeddings.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        embeddings = (embeddings / norms).numpy()
+        return embeddings.tolist()
 
     def _get_text_embedding(self, text: str) -> List[float]:
-        return self._model.encode([text], normalize_embeddings=True)[0].tolist()
+        return self._encode([f"Document: {text}"])[0]
 
     def _get_query_embedding(self, query: str) -> List[float]:
-        return self._model.encode([query], normalize_embeddings=True)[0].tolist()
+        return self._encode([f"Query: {query}"])[0]
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
         return self._get_query_embedding(query)
 
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        return self._model.encode(texts, normalize_embeddings=True).tolist()
+        return self._encode([f"Document: {t}" for t in texts])
 
 
 class VectorStoreEngine:
