@@ -31,6 +31,11 @@ class VLMEngine:
             chat_handler=self.chat_handler,
             n_ctx=(AppConfig.VLM_N_CTX if AppConfig.VLM_N_CTX is not None else 4096),
             n_gpu_layers=-1,
+            n_batch=512,
+            flash_attn_type=True,  # önce bunu dene
+            swa_full=True,  # Qwen3-VL için geçerli, dene
+            type_k=8,  # KV cache Q8_0 — flash_attn_type açıkken çalışır
+            type_v=8,
             verbose=False,
         )
         print("[SİSTEM] VLM Motoru başarıyla ayağa kalktı.")

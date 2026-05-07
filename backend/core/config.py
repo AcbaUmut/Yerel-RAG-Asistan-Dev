@@ -1,7 +1,7 @@
 class AppConfig:
     LLM_MODEL_NAME = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
     VLM_MODEL_NAME = "ZwZ-4B-Q4_K_M.gguf"
-    VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-F16.gguf"
+    VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-Q8_0.gguf"
     # EMBED_MODEL_NAME = "jina-v5-nano"
     # RERANKER_MODEL_NAME = "bge-reranker-v2-m3"
     RERANKER_MODEL_NAME = "bge-reranker-v2-m3-Q8_0.gguf"
