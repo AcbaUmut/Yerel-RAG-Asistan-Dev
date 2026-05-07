@@ -34,7 +34,11 @@ class JinaEmbeddings(BaseEmbedding):
 
     def _encode(self, texts: List[str]) -> List[List[float]]:
         inputs = self._tokenizer(
-            texts, padding=True, truncation=True, max_length=512, return_tensors="pt"
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=2048,  # max_lenght = 8192 maksimum.
+            return_tensors="pt",
         )
         # Resmi dokümantasyondaki pooling — last-token pooling
         with torch.no_grad():

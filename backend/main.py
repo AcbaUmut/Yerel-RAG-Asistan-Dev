@@ -1,11 +1,11 @@
-import os
+# import os
 import time
 
 from core.config import AppConfig
 from core.llm_engine import LLMEngine
 from core.retriever import RetrieverEngine
 
-os.environ["HF_HUB_OFFLINE"] = "1"
+# os.environ["HF_HUB_OFFLINE"] = "1"
 
 
 def main():
@@ -26,6 +26,9 @@ def main():
     )
     print(f"      Bağlam süzüldü. (Süre: {time.time() - check_time:.2f} sn)\n")
 
+    retriever.unload()
+    del retriever
+
     print("[3/4] Gemma Modeli VRAM'e yükleniyor...")
     check_time = time.time()
     llm = LLMEngine()
@@ -39,6 +42,9 @@ def main():
     print("=" * 60)
     print(f"\nYanıt Üretim Süresi: {time.time() - generation_start:.2f} saniye")
     print(f"\n=== İŞLEM BAŞARILI! (Toplam Süre: {time.time() - start_time:.2f} sn) ===")
+
+    llm.unload()
+    del llm
 
 
 if __name__ == "__main__":

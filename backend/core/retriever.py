@@ -3,7 +3,8 @@ import time
 from core.config import AppConfig
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from llama_cpp.llama_cpp import LLAMA_POOLING_TYPE_RANK
+from llama_cpp.llama_embedding import LlamaEmbedding
 
 
 class RetrieverEngine:
@@ -11,7 +12,7 @@ class RetrieverEngine:
         self.persist_dir = "./backend/chroma_db"
         self.collection_name = collection_name
 
-        print("[SİSTEM] Retriever modelleri belleğe alınıyor (CPU)...")
+        print("[SİSTEM] Retriever modelleri belleğe alınıyor...")
 
         jina = JinaEmbeddings()
 
@@ -22,10 +23,17 @@ class RetrieverEngine:
             def embed_query(self, text):
                 return jina._get_query_embedding(text)
 
-        self.bge_model = HuggingFaceCrossEncoder(
-            model_name=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
-            model_kwargs={"device": "cpu"},
+        print("[SİSTEM] BGE Reranker GGUF yükleniyor...")
+        self.reranker = LlamaEmbedding(
+            model_path=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
+            pooling_type=LLAMA_POOLING_TYPE_RANK,
+            n_gpu_layers=0,
+            n_ctx=0,
+            n_batch=4096,
+            n_ubatch=4096,
+            verbose=False,
         )
+        print("[SİSTEM] BGE Reranker GGUF başarıyla yüklendi.")
 
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
@@ -41,19 +49,18 @@ class RetrieverEngine:
 
         temp_time = time.time()
 
-        pairs = [[query, doc.page_content] for doc in raw_docs]
-        scores = self.bge_model.score(pairs)
+        documents = [doc.page_content for doc in raw_docs]
+        scores = self.reranker.rank(query, documents)
 
         print(f"\nReranker süresi: {time.time() - temp_time:.2f} sn")
 
-        for doc, score in zip(raw_docs, scores):
-            doc.metadata["relevance_score"] = float(score)
+        scored_docs = sorted(zip(scores, raw_docs), key=lambda x: x[0], reverse=True)
 
-        sorted_docs = sorted(
-            raw_docs, key=lambda x: x.metadata["relevance_score"], reverse=True
-        )
-        filtered_docs = [
-            doc for doc in sorted_docs if doc.metadata["relevance_score"] >= threshold
-        ]
-        best_docs = filtered_docs[:top_n]
+        best_docs = [doc for score, doc in scored_docs[:top_n] if score >= threshold]
+
         return "\n\n".join([doc.page_content.strip() for doc in best_docs])
+
+    def unload(self):
+        print("[SİSTEM] Reranker bellekten tahliye ediliyor...")
+        del self.reranker
+        print("[SİSTEM] Bellek temizlendi.")

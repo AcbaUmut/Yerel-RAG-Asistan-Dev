@@ -2,13 +2,14 @@ class AppConfig:
     LLM_MODEL_NAME = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
     VLM_MODEL_NAME = "ZwZ-4B-Q4_K_M.gguf"
     VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-F16.gguf"
-    # EMBED_MODEL_NAME = "jina-embeddings-v5-text-nano-retrieval-f16.gguf"
-    RERANKER_MODEL_NAME = "bge-reranker-v2-m3"
+    # EMBED_MODEL_NAME = "jina-v5-nano"
+    # RERANKER_MODEL_NAME = "bge-reranker-v2-m3"
+    RERANKER_MODEL_NAME = "bge-reranker-v2-m3-Q8_0.gguf"
+    # CPU 0, GPU -1
+    # RERANKER_MODE = 0
 
     CHUNK_SIZE = 1100
     CHUNK_OVERLAP = 200
-
-    EMBED_N_CTX = 8192
 
     RERANKER_TOP_N = 3
 

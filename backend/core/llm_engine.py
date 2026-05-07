@@ -36,15 +36,15 @@ class LLMEngine:
         )
 
         prompt_text = """<start_of_turn>user
-Sen KESİNLİKLE kendi önceden eğitilmiş bilgini KULLANMAYAN, sadece verilen bağlama sadık kalan bir asistansın.
-Aşağıdaki 'Bağlam' metninde kullanıcının sorusunun cevabı yoksa, "Bu bilgiye sahip değilim." de. Asla uydurma yapma!
+        Sen KESİNLİKLE kendi önceden eğitilmiş bilgini KULLANMAYAN, sadece verilen bağlama sadık kalan bir asistansın.
+        Aşağıdaki 'Bağlam' metninde kullanıcının sorusunun cevabı yoksa, "Bu bilgiye sahip değilim." de. Asla uydurma yapma!
 
-Bağlam:
-{context}
+        Bağlam:
+        {context}
 
-Soru: {question}<end_of_turn>
-<start_of_turn>model
-"""
+        Soru: {question}<end_of_turn>
+        <start_of_turn>model
+        """
         self.prompt_template = PromptTemplate(
             input_variables=["context", "question"], template=prompt_text
         )
@@ -56,3 +56,9 @@ Soru: {question}<end_of_turn>
             return self.chain.invoke({"context": context, "question": question})
         except Exception as e:
             return f"LLM Yanıt Üretirken Hata Oluştu: {str(e)}"
+
+    def unload(self):
+        print("[SİSTEM] LLM bellekten tahliye ediliyor...")
+        del self.llm
+        del self.chain
+        print("[SİSTEM] LLM belleği temizlendi.")
