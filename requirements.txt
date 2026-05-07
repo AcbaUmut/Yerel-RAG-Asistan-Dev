@@ -13,3 +13,4 @@ torch
 sentence-transformers
 langchain-huggingface
 ninja
+Pillow
