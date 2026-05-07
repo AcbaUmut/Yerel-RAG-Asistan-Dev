@@ -25,7 +25,7 @@ def main():
         vlm_engine = VLMEngine()
     except Exception as e:
         print(f"[HATA] VLM Motoru başlatılamadı: {e}")
-        return
+        pass
 
     parser_engine = DocumentParser()
 

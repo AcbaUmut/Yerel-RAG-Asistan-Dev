@@ -101,8 +101,8 @@ class VectorStoreEngine:
             print(
                 f"[SİSTEM] Eski '{file_name}' kayıtları ChromaDB'den başarıyla temizlendi."
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[UYARI] Eski kayıtlar temizlenemedi: {e}")
 
         print(f"Toplam {len(nodes)} düğüm vektör uzayına gömülüyor...")
         index = VectorStoreIndex(nodes=nodes, storage_context=self.storage_context)
