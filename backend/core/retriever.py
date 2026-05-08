@@ -58,7 +58,16 @@ class RetrieverEngine:
 
         best_docs = [doc for score, doc in scored_docs[:top_n] if score >= threshold]
 
-        return "\n\n".join([doc.page_content.strip() for doc in best_docs])
+        parts = []
+        for doc in best_docs:
+            content = doc.page_content.strip()
+            prefix = doc.metadata.get("context_prefix", "")
+            if prefix and doc.metadata.get("node_type") == "vlm":
+                parts.append(f"[Bağlam: {prefix}]\n{content}")
+            else:
+                parts.append(content)
+
+        return "\n\n".join(parts)
 
     def unload(self):
         print("[SİSTEM] Reranker bellekten tahliye ediliyor...")

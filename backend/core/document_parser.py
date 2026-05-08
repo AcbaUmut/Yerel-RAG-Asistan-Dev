@@ -8,7 +8,10 @@ import pymupdf4llm
 from core.config import AppConfig
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import TextNode
 from PIL import Image
+
+VLM_BLOCK_PATTERN = re.compile(r"(<VLM_START\b[^>]*>.*?<VLM_END>)", re.DOTALL)
 
 
 class DocumentParser:
@@ -239,33 +242,78 @@ class DocumentParser:
         return text
 
     # ──────────────────────────────────────────────────────────────────────────
+    # ← YENİ BÖLÜM — VLM Farkındalıklı Hibrit Chunker
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _chunking_with_vlm_awareness(self, enriched_text: str, file_path: str) -> list:
+        """
+        VLM bloklarını asla bölmeyen hibrit chunk sistemi.
+
+        Nasıl çalışır:
+            re.split() ile VLM_BLOCK_PATTERN'i ayraç olarak kullanıyoruz.
+            Python'un re.split() fonksiyonu, eğer kalıbı parantez içine
+            alırsan (capturing group), ayracı da sonuç listesine dahil eder.
+
+            Örnek:
+                Girdi : "AAA <VLM_START>XYZ<VLM_END> BBB"
+                Çıktı : ["AAA ", "<VLM_START>XYZ<VLM_END>", " BBB"]
+
+            Bu sayede listede dönüp her elemana bakıyoruz:
+                - VLM bloğu mu? → Tek node yap, dokunma.
+                - Normal metin mi? → SentenceSplitter'a ver, chunk'la.
+
+            Ayrıca her VLM node'una "context_prefix" ekliyoruz:
+            Yani "bu görsel hangi metnin hemen ardından geliyordu?"
+            bilgisini metadata olarak saklıyoruz. Bu bilgi retrieval
+            sırasında LLM'e "görselin bağlamı" olarak verilebilir.
+        """
+        # re.split, VLM_BLOCK_PATTERN'i ayraç olarak kullanır.
+        # Capturing group sayesinde VLM blokları da listede yer alır.
+        segments = VLM_BLOCK_PATTERN.split(enriched_text)
+
+        base_metadata = {"file_name": file_path}
+        nodes = []
+        last_text_tail = ""  # Bir önceki metin segmentinin sonu
+
+        for segment in segments:
+            if not segment.strip():
+                continue  # Boş segmentleri atla
+
+            if VLM_BLOCK_PATTERN.match(segment.strip()):
+                # ── Bu segment bir VLM bloğu ───────────────────────────
+                # Bölme, dokunma. Tek bir TextNode olarak ekle.
+                node = TextNode(
+                    text=segment.strip(),
+                    metadata={
+                        **base_metadata,
+                        "node_type": "vlm",
+                        # Son 300 karakter: görselin hangi metinle
+                        # bağlantılı olduğunu retrieval'da görmek için
+                        "context_prefix": last_text_tail[-300:].strip(),
+                    },
+                )
+                nodes.append(node)
+
+            else:
+                # ── Bu segment normal metin ────────────────────────────
+                # SentenceSplitter ile normal şekilde chunk'la.
+                doc = Document(
+                    text=segment.strip(),
+                    metadata={**base_metadata, "node_type": "text"},
+                )
+                text_nodes = self.parser.get_nodes_from_documents([doc])
+                nodes.extend(text_nodes)
+
+                # Bir sonraki VLM node için bağlam kuyruğunu güncelle
+                last_text_tail = segment
+
+        return nodes
+
+    # ──────────────────────────────────────────────────────────────────────────
     # ANA METOD
     # ──────────────────────────────────────────────────────────────────────────
 
     def parse(self, file_path: str, vlm_engine=None):
-        """
-        Ayrıştırma akışı:
-
-            Adım 1 — pymupdf4llm:
-                Tüm doküman işlenir. Layout modu otomatik aktiftir.
-                Metin, başlıklar, madde işaretleri, paragraflar ve görsel
-                referansları (![]()) çıkarılır. Görseller dpi=300 ile
-                yüksek çözünürlükte diske yazılır.
-
-            Adım 2 — Üstbilgi/altbilgi temizliği:
-                Tekrar eden sayfa numaraları, üniversite adları vb. silinir.
-
-            Adım 3 — Markdown temizliği:
-                pymupdf4llm kalıntıları, gereksiz boş satırlar temizlenir.
-
-            Adım 4 — VLM enjeksiyonu:
-                PIL filtresi dekoratif görselleri eler.
-                Gerçek içerik görselleri VLM'e gönderilir.
-                Analiz sonucu görselin orijinal konumuna yerleştirilir.
-
-            Adım 5 — Chunking:
-                SentenceSplitter ile semantik parçalara bölünür.
-        """
         if not os.path.exists(file_path):
             raise FileNotFoundError(
                 f"HATA: Ayrıştırılacak belge bulunamadı → {file_path}"
@@ -284,7 +332,7 @@ class DocumentParser:
             doc=file_path,
             write_images=True,
             image_path=temp_img_dir,
-            dpi=300,  # Yüksek çözünürlük — VLM için kritik
+            dpi=300,
             page_chunks=True,
         )
 
@@ -297,9 +345,10 @@ class DocumentParser:
         # ── Adım 4: VLM enjeksiyonu ───────────────────────────────────────────
         enriched_text = self._inject_vlm_analysis(clean_text, vlm_engine)
 
-        # ── Adım 5: Chunking ──────────────────────────────────────────────────
-        doc = Document(text=enriched_text, metadata={"file_name": file_path})
-        nodes = self.parser.get_nodes_from_documents([doc])
+        # ── Adım 5: VLM Farkındalıklı Chunking ───────────────────────────────
+        # ← DEĞİŞTİ: Eskiden tek Document → SentenceSplitter'dı.
+        # Artık hibrit chunker çağrılıyor.
+        nodes = self._chunking_with_vlm_awareness(enriched_text, file_path)
 
         print(
             f"Başarılı! Doküman semantik yapısı korunarak "

@@ -16,7 +16,7 @@ def main():
     retriever = RetrieverEngine()
     print(f"      Sistem hazır. (Süre: {time.time() - start_time:.2f} sn)\n")
 
-    question = "C dili nedir?"
+    question = "OSI modeli hakkında bilgi verir misin?"
     print(f"Soru: {question}\n")
 
     print("[2/4] Veritabanında arama yapılıyor ve Reranker süzgecinden geçiriliyor...")
