@@ -8,10 +8,19 @@ import pymupdf4llm
 from core.config import AppConfig
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core.schema import TextNode
+from llama_index.core.schema import TextNode  # ← YENİ
 from PIL import Image
 
+# ── Sabitler ──────────────────────────────────────────────────────────────────
+
+# VLM bloğunu baştan sona eşleyen kalıp.
+# re.split() ile kullanıldığında capturing group sayesinde
+# ayraçların kendisi de sonuç listesine dahil olur.
 VLM_BLOCK_PATTERN = re.compile(r"(<VLM_START\b[^>]*>.*?<VLM_END>)", re.DOTALL)
+
+# Bu uzunluğun altındaki saf metin segmentleri (başlıklar, tek satırlar vb.)
+# komşularıyla birleştirilir; tek başına node olmaz.
+MIN_SEGMENT_LEN = 150
 
 
 class DocumentParser:
@@ -30,8 +39,7 @@ class DocumentParser:
 
         PIL          →  Görsel filtresi. Dekoratif şeritler, logolar ve
                         küçük öğeleri VLM'e göndermeden eleyerek gereksiz
-                        VLM çağrılarını önler. Diske yazılan görsel sayısını
-                        değiştirmez; yalnızca VLM'e gidecek olanları belirler.
+                        VLM çağrılarını önler.
 
         VLM          →  Yalnızca filtreden geçen gerçek içerik görselleri
                         için çalışır.
@@ -109,7 +117,6 @@ class DocumentParser:
         """
         pymupdf4llm çıktısındaki gürültüleri temizler.
         """
-        # pymupdf4llm görsel metin bloklarını temizle
         text = re.sub(
             r"\*\*----- Start of picture text -----\*\*.*?\*\*----- End of picture text -----\*\*<br>",
             "",
@@ -119,9 +126,7 @@ class DocumentParser:
         text = re.sub(
             r"\*\*==> picture \[.*?\] intentionally omitted <==\*\*", "", text
         )
-        # Tek başına duran sayfa numaralarını sil
         text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
-        # Üç veya daha fazla boş satırı ikiye indir
         text = re.sub(r"(?:\n[ \t\x0b\f\r\xa0]*){3,}", "\n\n", text)
         return text.strip()
 
@@ -132,36 +137,25 @@ class DocumentParser:
     def _is_decorative_image(self, image_path: str) -> bool:
         """
         Bir görselin dekoratif/gürültü mü yoksa gerçek içerik mi olduğunu
-        üç bağımsız kuralla belirler. Herhangi bir kural tetiklenirse
-        görsel dekoratif kabul edilir ve VLM'e gönderilmez.
+        üç bağımsız kuralla belirler.
 
-        Kural 1 — Boyut:
-            Toplam piksel < 4000 veya en kısa kenar < 20px → simge/çizgi.
-
-        Kural 2 — En-boy oranı:
-            Oran > 20 (çok geniş şerit) veya < 0.05 (çok uzun dikey şerit)
-            → dekoratif süs elemanı.
-            Örnek: 1001x21 piksel mavi şerit → oran 47.7 → dekoratif.
-
-        Kural 3 — Renk varyansı:
-            Std sapma < 18 → neredeyse tek renkli → düz renkli arka plan.
+        Kural 1 — Boyut:   Toplam piksel < 4000 veya en kısa kenar < 20px
+        Kural 2 — En-boy:  Oran > 20 veya < 0.05
+        Kural 3 — Renk:    Std sapma < 18 → neredeyse tek renkli
         """
         try:
             img = Image.open(image_path).convert("RGB")
             w, h = img.size
 
-            # Kural 1
             if w * h < 4000:
                 return True
             if min(w, h) < 20:
                 return True
 
-            # Kural 2
             ratio = w / h
             if ratio > 20.0 or ratio < 0.05:
                 return True
 
-            # Kural 3 — büyük görsellerde örnekleme yaparak hız kazanıyoruz
             arr = np.array(img, dtype=np.float32)
             step_y = max(1, h // 60)
             step_x = max(1, w // 60)
@@ -172,7 +166,7 @@ class DocumentParser:
             return False
 
         except Exception:
-            return True  # Okunamayan görsel → atla
+            return True
 
     # ──────────────────────────────────────────────────────────────────────────
     # BÖLÜM 4 — VLM Enjeksiyonu (Filtreli)
@@ -185,10 +179,6 @@ class DocumentParser:
             → Dekoratif ise: referans metinden silinir, VLM çağrılmaz.
             → Gerçek içerik ise: VLM'e gönderilir, analiz sonucu görselin
                orijinal konumuna yerleştirilir.
-
-        Görsel analizinin görselin bulunduğu konuma yerleştirilmesi,
-        ChromaDB chunk'larında görsel içeriğinin ilgili metinle birlikte
-        bulunmasını sağlar.
         """
         if vlm_engine is None:
             print("[UYARI] VLM Motoru sağlanmadı. Görseller metne dahil edilmeyecek.")
@@ -201,7 +191,6 @@ class DocumentParser:
             print("[SİSTEM] Dokümanda analiz edilecek görsel bulunamadı.")
             return text
 
-        # Tüm görselleri önceden filtrele
         decorative_paths = {
             m.group(1) for m in matches if self._is_decorative_image(m.group(1))
         }
@@ -242,71 +231,128 @@ class DocumentParser:
         return text
 
     # ──────────────────────────────────────────────────────────────────────────
-    # ← YENİ BÖLÜM — VLM Farkındalıklı Hibrit Chunker
+    # BÖLÜM 5 — VLM Farkındalıklı Hibrit Chunker  ← YENİ
     # ──────────────────────────────────────────────────────────────────────────
 
     def _chunking_with_vlm_awareness(self, enriched_text: str, file_path: str) -> list:
         """
-        VLM bloklarını asla bölmeyen hibrit chunk sistemi.
+        VLM bloklarını asla bölmeyen, başlık bağlamını koruyan hibrit chunk sistemi.
 
-        Nasıl çalışır:
-            re.split() ile VLM_BLOCK_PATTERN'i ayraç olarak kullanıyoruz.
-            Python'un re.split() fonksiyonu, eğer kalıbı parantez içine
-            alırsan (capturing group), ayracı da sonuç listesine dahil eder.
+        Üç aşamalı çalışır:
 
-            Örnek:
-                Girdi : "AAA <VLM_START>XYZ<VLM_END> BBB"
-                Çıktı : ["AAA ", "<VLM_START>XYZ<VLM_END>", " BBB"]
+        Aşama 1 — Tip etiketleme:
+            Metin VLM_BLOCK_PATTERN ile parçalanır.
+            Her parça "vlm" veya "text" olarak etiketlenir.
 
-            Bu sayede listede dönüp her elemana bakıyoruz:
-                - VLM bloğu mu? → Tek node yap, dokunma.
-                - Normal metin mi? → SentenceSplitter'a ver, chunk'la.
+        Aşama 2 — Küçük segment birleştirme:
+            MIN_SEGMENT_LEN altındaki metin segmentleri (başlıklar, tek
+            satırlar) komşularıyla birleştirilir.
+            Birleştirme önceliği:
+                1. Sonraki segment metin ise → ona önek olarak ekle
+                2. Önceki segment metin ise → ona sonek olarak ekle
+                3. Her iki taraf da VLM ise → node olarak kalır,
+                   başlık yine de son_baslik değişkenine kaydedilir
 
-            Ayrıca her VLM node'una "context_prefix" ekliyoruz:
-            Yani "bu görsel hangi metnin hemen ardından geliyordu?"
-            bilgisini metadata olarak saklıyoruz. Bu bilgi retrieval
-            sırasında LLM'e "görselin bağlamı" olarak verilebilir.
+        Aşama 3 — Node üretimi:
+            - Metin segmentleri → SentenceSplitter (overlap korunur)
+            - VLM segmentleri → Atomik TextNode (asla bölünmez)
+              Her VLM node'una [Bölüm: <başlık>] satırı eklenir.
+              Embedding modeli görselin hangi başlık altında olduğunu görür.
+
+        node_index:
+            Her node'a sıralı bir tam sayı atanır.
+            Retriever bu indeksi kullanarak komşu node'ları getirebilir.
         """
-        # re.split, VLM_BLOCK_PATTERN'i ayraç olarak kullanır.
-        # Capturing group sayesinde VLM blokları da listede yer alır.
-        segments = VLM_BLOCK_PATTERN.split(enriched_text)
+        # ── Aşama 1: Tip etiketleme ───────────────────────────────────────────
+        raw_segments = VLM_BLOCK_PATTERN.split(enriched_text)
+        typed: list[dict] = []
+        for seg in raw_segments:
+            if not seg.strip():
+                continue
+            is_vlm = bool(VLM_BLOCK_PATTERN.match(seg.strip()))
+            typed.append({"type": "vlm" if is_vlm else "text", "content": seg.strip()})
 
+        # ── Aşama 2: Küçük segment birleştirme ───────────────────────────────
+        merged: list[dict] = []
+        i = 0
+        while i < len(typed):
+            seg = typed[i]
+
+            if seg["type"] == "text" and len(seg["content"]) < MIN_SEGMENT_LEN:
+                # Önce sonraki metin segmentiyle birleştirmeyi dene
+                if i + 1 < len(typed) and typed[i + 1]["type"] == "text":
+                    typed[i + 1]["content"] = (
+                        seg["content"] + "\n\n" + typed[i + 1]["content"]
+                    )
+                    i += 1
+                    continue
+                # Sonraki VLM veya yok; önceki metin varsa ona ekle
+                elif merged and merged[-1]["type"] == "text":
+                    merged[-1]["content"] += "\n\n" + seg["content"]
+                    i += 1
+                    continue
+                # İki tarafı da VLM: node olarak kalır (başlık bilgisi kaybolmasın)
+
+            merged.append(dict(seg))
+            i += 1
+
+        # ── Aşama 3: Node üretimi ─────────────────────────────────────────────
         base_metadata = {"file_name": file_path}
-        nodes = []
-        last_text_tail = ""  # Bir önceki metin segmentinin sonu
+        nodes: list = []
+        last_heading = ""  # Son görülen başlık metni
+        last_text_tail = ""  # Bir önceki metin segmentinin ham içeriği
 
-        for segment in segments:
-            if not segment.strip():
-                continue  # Boş segmentleri atla
+        for seg in merged:
+            if seg["type"] == "vlm":
+                # Başlık bağlamını VLM metnine göm.
+                # Embedding modeli artık VLM içeriğiyle birlikte başlığı da görür.
+                prefix = f"[Bölüm: {last_heading}]\n" if last_heading else ""
 
-            if VLM_BLOCK_PATTERN.match(segment.strip()):
-                # ── Bu segment bir VLM bloğu ───────────────────────────
-                # Bölme, dokunma. Tek bir TextNode olarak ekle.
                 node = TextNode(
-                    text=segment.strip(),
+                    text=prefix + seg["content"],
                     metadata={
                         **base_metadata,
                         "node_type": "vlm",
-                        # Son 300 karakter: görselin hangi metinle
-                        # bağlantılı olduğunu retrieval'da görmek için
                         "context_prefix": last_text_tail[-300:].strip(),
+                        "node_index": len(nodes),
                     },
                 )
                 nodes.append(node)
 
-            else:
-                # ── Bu segment normal metin ────────────────────────────
-                # SentenceSplitter ile normal şekilde chunk'la.
+            else:  # text
+                # Bu segmentteki başlıkları tara, son başlığı güncelle.
+                # Regex: # ile başlayan satırları eşler, ** bold marker'larını temizler.
+                heading_matches = re.findall(
+                    r"^#{1,6}\s+(.+?)$", seg["content"], re.MULTILINE
+                )
+                if heading_matches:
+                    last_heading = (
+                        heading_matches[-1]
+                        .strip()
+                        .replace("**", "")
+                        .replace("*", "")
+                        .strip()
+                    )
+
                 doc = Document(
-                    text=segment.strip(),
+                    text=seg["content"],
                     metadata={**base_metadata, "node_type": "text"},
                 )
                 text_nodes = self.parser.get_nodes_from_documents([doc])
-                nodes.extend(text_nodes)
 
-                # Bir sonraki VLM node için bağlam kuyruğunu güncelle
-                last_text_tail = segment
+                # Her text node'una sıralı index ata
+                for tn in text_nodes:
+                    tn.metadata["node_index"] = len(nodes)
+                    nodes.append(tn)
 
+                last_text_tail = seg["content"]
+
+        vlm_count = sum(1 for n in nodes if n.metadata.get("node_type") == "vlm")
+        text_count = len(nodes) - vlm_count
+        print(
+            f"[SİSTEM] Hibrit chunker tamamlandı: "
+            f"{text_count} metin node + {vlm_count} VLM node = {len(nodes)} toplam"
+        )
         return nodes
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -314,6 +360,15 @@ class DocumentParser:
     # ──────────────────────────────────────────────────────────────────────────
 
     def parse(self, file_path: str, vlm_engine=None):
+        """
+        Ayrıştırma akışı:
+
+            Adım 1 — pymupdf4llm:  Metin + görsel referansları çıkar
+            Adım 2 — Üstbilgi/altbilgi temizliği
+            Adım 3 — Markdown temizliği
+            Adım 4 — VLM enjeksiyonu
+            Adım 5 — VLM farkındalıklı hibrit chunking
+        """
         if not os.path.exists(file_path):
             raise FileNotFoundError(
                 f"HATA: Ayrıştırılacak belge bulunamadı → {file_path}"
@@ -326,7 +381,7 @@ class DocumentParser:
         temp_img_dir = os.path.join("backend", "data", "temp_images", name_without_ext)
         os.makedirs(temp_img_dir, exist_ok=True)
 
-        # ── Adım 1: pymupdf4llm ───────────────────────────────────────────────
+        # ── Adım 1 ───────────────────────────────────────────────────────────
         print("[SİSTEM] pymupdf4llm (Layout modu) çalıştırılıyor...")
         md_pages = pymupdf4llm.to_markdown(
             doc=file_path,
@@ -336,24 +391,19 @@ class DocumentParser:
             page_chunks=True,
         )
 
-        # ── Adım 2: Üstbilgi/altbilgi temizliği ──────────────────────────────
+        # ── Adım 2 ───────────────────────────────────────────────────────────
         joined_text = self._remove_frequent_headers_footers(md_pages)
 
-        # ── Adım 3: Markdown temizliği ────────────────────────────────────────
+        # ── Adım 3 ───────────────────────────────────────────────────────────
         clean_text = self._clean_markdown(joined_text)
 
-        # ── Adım 4: VLM enjeksiyonu ───────────────────────────────────────────
+        # ── Adım 4 ───────────────────────────────────────────────────────────
         enriched_text = self._inject_vlm_analysis(clean_text, vlm_engine)
 
-        # ── Adım 5: VLM Farkındalıklı Chunking ───────────────────────────────
-        # ← DEĞİŞTİ: Eskiden tek Document → SentenceSplitter'dı.
-        # Artık hibrit chunker çağrılıyor.
+        # ── Adım 5 ───────────────────────────────────────────────────────────
         nodes = self._chunking_with_vlm_awareness(enriched_text, file_path)
 
-        print(
-            f"Başarılı! Doküman semantik yapısı korunarak "
-            f"{len(nodes)} adet düğüme ayrıştırıldı."
-        )
+        print(f"Başarılı! Doküman {len(nodes)} adet düğüme ayrıştırıldı.")
         return nodes
 
 

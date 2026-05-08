@@ -13,7 +13,7 @@ class AppConfig:
 
     RERANKER_TOP_N = 3
 
-    LLM_N_CTX = 4096
+    LLM_N_CTX = 8192
     LLM_MAX_TOKENS = 1024
     LLM_TEMPERATURE = 0.1
 

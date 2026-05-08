@@ -27,12 +27,16 @@ class LLMEngine:
                 if AppConfig.LLM_MAX_TOKENS is not None
                 else 1024
             ),
-            n_ctx=(AppConfig.LLM_N_CTX if AppConfig.LLM_N_CTX is not None else 4096),
+            n_ctx=(AppConfig.LLM_N_CTX if AppConfig.LLM_N_CTX is not None else 8192),
             n_gpu_layers=-1,
             n_batch=512,
-            f16_kv=True,
             repeat_penalty=1.1,
             verbose=False,
+            # type_k / type_v LangChain'in bildiği parametreler değil.
+            # model_kwargs içine koyunca LangChain uyarı vermeden
+            # doğrudan llama.cpp'ye iletir. 8 = GGML_TYPE_Q8_0.
+            # f16_kv=True yerine bu yöntem: KV cache belleği ~%50 düşer.
+            model_kwargs={"type_k": 8, "type_v": 8},
         )
 
         prompt_text = """<start_of_turn>user
