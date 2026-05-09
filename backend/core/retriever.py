@@ -154,15 +154,6 @@ class RetrieverEngine:
         for doc in docs:
             meta = doc.metadata
             section_id = meta.get("section_id")
-            ntype = meta.get("node_type", "text")
-
-            # Section node doğrudan geliyorsa direkt ekle
-            if ntype == "section":
-                sid = meta.get("section_id", "")
-                if sid and sid not in seen_section_ids:
-                    seen_section_ids.add(sid)
-                    result_docs.append(doc)
-                continue
 
             # ── Yol 1: section_id = parent node'un ChromaDB ID'si → direkt get ──
             if section_id and section_id not in seen_section_ids:
@@ -211,23 +202,25 @@ class RetrieverEngine:
         Sorguya en uygun bağlamı döndürür.
 
         Akış:
-            1. k=15 ile tüm node'ları çek (section dahil)
-            2. Python tarafında section node'larını filtrele → sadece text/vlm kalır
-            3. Reranker ile yeniden sırala, top_n al
-            4. Section parent'larıyla genişlet (_expand_with_section_context)
-            5. Debug çıktısı yaz (terminalde tam görünürlük)
-            6. Birleşik parent metinleri döndür
+            1. k=10 ile tez_koleksiyonu'ndan child node'lar çek (section'lar ayrı koleksiyonda)
+            2. Reranker ile yeniden sırala, top_n al
+            3. Section parent'larıyla genişlet (_expand_with_section_context)
+            4. Debug çıktısı yaz
+            5. Birleşik parent metinleri döndür
         """
         # ── 1. Ham getirme ─────────────────────────────────────
-        raw_all = self.base_retriever.invoke(query)
+        raw_docs = self.base_retriever.invoke(query)
+        if not raw_docs:
+            print("[RETRIEVER] Hiç sonuç bulunamadı.")
+            return ""
 
         # ── 2. Reranker ───────────────────────────────────────────────────────────
         temp_time = time.time()
-        documents = [doc.page_content for doc in raw_all]
+        documents = [doc.page_content for doc in raw_docs]
         scores = self.reranker.rank(query, documents)
         reranker_ms = (time.time() - temp_time) * 1000
 
-        scored_docs = sorted(zip(scores, raw_all), key=lambda x: x[0], reverse=True)
+        scored_docs = sorted(zip(scores, raw_docs), key=lambda x: x[0], reverse=True)
         best_docs = [doc for _, doc in scored_docs[:top_n]]
 
         if not best_docs:
@@ -241,7 +234,7 @@ class RetrieverEngine:
         print("  RETRIEVER DEBUG")
         print(f"  Sorgu  : {query[:60]}")
         print(
-            f"  Ham    : {len(raw_all)} node çekildi → {len(raw_all)} child filtrelendi"
+            f"  Ham    : {len(raw_docs)} node çekildi → {len(raw_docs)} child filtrelendi"
         )
         print(f"  Reranker: {reranker_ms:.0f}ms — top-{top_n} seçildi")
         print("─" * 70)
@@ -271,6 +264,14 @@ class RetrieverEngine:
             ss = doc.metadata.get("section_start_index", "?")
             se = doc.metadata.get("section_end_index", "?")
             clen = len(doc.page_content)
+            # Overlap prefix varsa atla — asıl içerikten önizleme göster.
+            # "[Önceki Bölüm Bağlamı: ...]" prefixleri debug'ı yanıltır.
+            content_for_preview = doc.page_content
+            if content_for_preview.startswith("[Önceki Bölüm Bağlamı:"):
+                skip = content_for_preview.find("\n\n")
+                if skip > 0:
+                    content_for_preview = content_for_preview[skip + 2 :]
+
             prev = doc.page_content[:60].replace("\n", " ")
             print(
                 f"    {ntype}[{nidx}] | sec=[{ss}-{se}] | {clen} karakter | {prev}..."

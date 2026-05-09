@@ -240,6 +240,30 @@ class DocumentParser:
     # BÖLÜM 5 — VLM Farkındalıklı Hibrit Chunker  ← YENİ
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _split_on_internal_headings(self, text: str) -> list[str]:
+        """
+        Bir metin bloğu içindeki ## başlıklarını bölme noktası olarak kullanır.
+
+        Problem: pymupdf4llm bazen iki farklı slaytta aynı metin bloğuna düşen
+        içerikleri tek bir markdown bloğu olarak çıkarır. SentenceSplitter bunu
+        ## sınırından değil, cümle/boyut sınırından böler. Sonuç: "PUKÖ" ve
+        "Siber Tehdit" gibi tamamen farklı konular tek bir text node'una girer.
+        _create_section_parents bu node'u section sınırı olarak tanıyamaz çünkü
+        node başında ## yoktur.
+
+        Fix: Her text segmentini SentenceSplitter'a göndermeden önce içindeki
+        ## başlıklarından parçalıyoruz. Her parça ayrı node olunca, başlığıyla
+        başlayan parçalar section sınırı olarak düzgün tanınır.
+
+        Örnek:
+            Input : "- Planla: BGYS...\n\n## Siber Tehdit\n...\n## Siber Saldırı\n..."
+            Output: ["- Planla: BGYS...", "## Siber Tehdit\n...", "## Siber Saldırı\n..."]
+        """
+        # Başa \n ekliyoruz ki metnin ta başındaki ## de yakalanabilsin
+        parts = re.split(r"\n(?=#{1,2} )", "\n" + text)
+        result = [p.strip() for p in parts if p.strip()]
+        return result if result else [text]
+
     def _chunking_with_vlm_awareness(self, enriched_text: str, file_path: str) -> list:
         """
         VLM bloklarını asla bölmeyen, başlık bağlamını koruyan hibrit chunk sistemi.
@@ -326,32 +350,37 @@ class DocumentParser:
                 nodes.append(node)
 
             else:  # text
-                # Bu segmentteki başlıkları tara, son başlığı güncelle.
-                # Regex: # ile başlayan satırları eşler, ** bold marker'larını temizler.
-                heading_matches = re.findall(
-                    r"^#{1,2}\s+(.+?)$", seg["content"], re.MULTILINE
-                )
-                if heading_matches:
-                    last_heading = (
-                        heading_matches[0]  # [-1] değil [0] — ilk/ana başlık
-                        .strip()
-                        .replace("**", "")
-                        .replace("*", "")
-                        .strip()
+                # YENİ: Segmenti önce iç ## başlıklarından parçala.
+                # Her parça SentenceSplitter'a ayrı ayrı girer.
+                # Bu sayede bir segment içindeki farklı konular ayrı node'lara düşer
+                # ve _create_section_parents onları section sınırı olarak tanıyabilir.
+                sub_segs = self._split_on_internal_headings(seg["content"])
+
+                for sub_seg in sub_segs:
+                    # Bu parçanın başlığını güncelle — VLM prefix için gerekli
+                    sub_heading_matches = re.findall(
+                        r"^#{1,2}\s+(.+?)$", sub_seg, re.MULTILINE
                     )
+                    if sub_heading_matches:
+                        last_heading = (
+                            sub_heading_matches[0]
+                            .strip()
+                            .replace("**", "")
+                            .replace("*", "")
+                            .strip()
+                        )
 
-                doc = Document(
-                    text=seg["content"],
-                    metadata={**base_metadata, "node_type": "text"},
-                )
-                text_nodes = self.parser.get_nodes_from_documents([doc])
-
-                # Her text node'una sıralı index ata
-                for tn in text_nodes:
-                    tn.metadata["node_index"] = len(nodes)
-                    nodes.append(tn)
+                    doc = Document(
+                        text=sub_seg, metadata={**base_metadata, "node_type": "text"}
+                    )
+                    text_nodes = self.parser.get_nodes_from_documents([doc])
+                    for tn in text_nodes:
+                        tn.metadata["node_index"] = len(nodes)
+                        nodes.append(tn)
 
                 last_text_tail = seg["content"]
+                # Not: last_text_tail tüm segmenti tutar; VLM'lerin context_prefix'i
+                # bölünmüş değil orijinal bağlamdan hesaplanır.
 
         vlm_count = sum(1 for n in nodes if n.metadata.get("node_type") == "vlm")
         text_count = len(nodes) - vlm_count
@@ -366,75 +395,151 @@ class DocumentParser:
         Child node listesini ## başlıklarına göre section'lara gruplar,
         her section için bir parent TextNode üretir.
 
-        Section sınırı kuralı:
-            Yeni bir section, yalnızca şu koşulların IKISI birden sağlanıyorsa başlar:
-                1. Karşılaşılan node bir başlık node'u (# veya ## ile başlıyor)
-                2. Mevcut section içinde daha önce en az bir içerik (başlık olmayan) node'u geçilmiş
-
-            Bu kural, ard arda gelen ## başlıklarının tek bir section altında
-            toplanmasını sağlar. Örneğin:
-                [A] "## Güvenlik Prensipleri (Temel)"   → section başlar
-                [B] "## Güvenlik Prensipleri (Ek)"      → section_has_content=False,
-                                                           yeni section AÇILMAZ, [B] aynı section'a eklenir
-                [C] vlm                                  → section_has_content=True
-                [D] "## Yeni Bölüm"                     → section_has_content=True, YENİ section başlar ✓
-
-        MIN_SECTION_CHARS:
-            Parent metni bu değerin altındaysa (örn. sadece bir başlık + küçük VLM),
-            sonraki section ile birleştirilir.
+        Aşamalar:
+            Aşama 1 — Heading sınırı tespiti (section_has_content kuralı)
+            Aşama 2 — MIN birleştirme: çok kısa section'lar sonrakiyle birleştirilir
+            Aşama 2.5 — MAX bölme: çok büyük section'lar node sınırından bölünür.
+                         Boyut-tabanlı kesmelerde konu sürekliliği için önceki
+                         parçanın sonu bir sonrakinin başına "örtüşme" olarak eklenir.
+                         Heading-tabanlı sınırlarda örtüşme EKLENMEZ (farklı konular).
+            Aşama 3 — Parent TextNode üretimi, child'lara section metadata eklenmesi
         """
 
         MIN_SECTION_CHARS = 600
+        MAX_SECTION_CHARS = (
+            5000  # ~1000 token; 3 section → ~3000 token bağlam → LLM için güvenli
+        )
+        SECTION_OVERLAP_CHARS = 200  # Boyut-tabanlı kesmede taşınan örtüşme
 
-        # Sadece child node'ları işle; önceki çalışmadan kalan section node'u yoksa bu zaten boş.
         child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
 
-        # ── Aşama 1: Section sınırlarını tespit et ────────────────────────────────
+        # ── Aşama 1: Heading sınırı tespiti ──────────────────────────────────────
         sections: list[list] = []
         current: list = []
-        section_has_content = False  # Mevcut section'da başlık-dışı içerik var mı?
+        section_has_content = False
 
         for node in child_nodes:
             text = node.text or ""
             ntype = node.metadata.get("node_type", "text")
-
-            # Başlık tespiti: text node'u ve ## veya # ile başlıyor
             is_heading = ntype == "text" and bool(re.match(r"^#{1,2}\s", text.strip()))
 
             if is_heading:
                 if section_has_content and current:
-                    # Önceki section'da içerik vardı → gerçek bir section sınırı
                     sections.append(current)
                     current = [node]
                     section_has_content = False
                 else:
-                    # Art arda başlık — aynı section'a ekle, sınır oluşturma
                     current.append(node)
             else:
                 current.append(node)
-                if text.strip():  # Boş olmayan içerik varsa bayrağı kaldır
+                if text.strip():
                     section_has_content = True
 
         if current:
             sections.append(current)
 
-        # ── Aşama 2: Çok kısa section'ları sonrakiyle birleştir ──────────────────
+        # ── Aşama 2: MIN birleştirme ──────────────────────────────────────────────
         merged_sections: list[list] = []
         i = 0
         while i < len(sections):
             sec = sections[i]
-            combined_len = sum(len(n.text or "") for n in sec)
-            if combined_len < MIN_SECTION_CHARS and i + 1 < len(sections):
-                # Bu section çok kısa, sonrakine ekle
+            total = sum(len(n.text or "") for n in sec)
+            if total < MIN_SECTION_CHARS and i + 1 < len(sections):
                 sections[i + 1] = sec + sections[i + 1]
             else:
                 merged_sections.append(sec)
             i += 1
 
-        # ── Aşama 3: Parent node'ları üret, child'lara metadata ekle ─────────────
+        # ── Aşama 2.5: MAX bölme — heading sınırlarını tercih eder ──────────────
+
+        #
+        # TEMEL PRENSİP: Bir başlık ve altındaki içerik (metin + VLM'ler) bütün
+        # kalır. MAX_SECTION_CHARS bir "yumuşak sınır"dır; bir başlığın altındaki
+        # tüm içerik bu sınırı aşıyorsa section o kadar büyük kalır, yine de
+        # bölünmez. Böylece aynı konuya ait VLM'ler asla farklı section'lara düşmez.
+        #
+        # Heading bazlı bölmede overlap EKLENMEz (farklı konular, bağlantı gereksiz).
+        # Yalnızca 0-1 heading varsa node sınırından bölünür ve overlap eklenir.
+
+        final_sections: list[tuple[list, str]] = []  # (node_listesi, overlap_prefix)
+
+        for sec in merged_sections:
+            total = sum(len(n.text or "") for n in sec)
+
+            if total <= MAX_SECTION_CHARS:
+                final_sections.append((sec, ""))
+                continue
+
+            # Section MAX'ı aşıyor. Kaç tane heading var?
+            heading_indices = [
+                i
+                for i, n in enumerate(sec)
+                if n.metadata.get("node_type") == "text"
+                and re.match(r"^#{1,2}\s", (n.text or "").strip())
+            ]
+
+            if len(heading_indices) > 1:
+                # ── Heading bazlı bölme ────────────────────────────────────────
+                # Kümülatif boyut MIN_SECTION_CHARS'ı geçtikten sonra bir sonraki
+                # heading'de kes. Bu sayede çok kısa section'lar oluşmaz ve
+                # her heading bloğunun içeriği (VLM'ler dahil) bütün kalır.
+                current_start = 0
+                current_len = 0
+                temp_splits = []  # (başlangıç, bitiş) index çiftleri
+
+                for i, node in enumerate(sec):
+                    is_heading = i in heading_indices
+                    if (
+                        is_heading
+                        and current_len >= MIN_SECTION_CHARS
+                        and i > current_start
+                    ):
+                        # Yeterince dolu, bu heading noktasında kes
+                        temp_splits.append((current_start, i))
+                        current_start = i
+                        current_len = len(node.text or "")
+                    else:
+                        current_len += len(node.text or "")
+
+                temp_splits.append((current_start, len(sec)))  # Son parça
+
+                for start, end in temp_splits:
+                    chunk = sec[start:end]
+                    if chunk:
+                        # Heading bazlı kesmede overlap yok — konular zaten farklı
+                        final_sections.append((chunk, ""))
+
+            else:
+                # ── Node sınırı bazlı bölme (heading yok veya tek heading) ───
+                # Başlık yapısı olmayan belgeler (düz makale, rapor vb.) için.
+                # Konu sürekliliği için önceki parçanın sonu sonrakine taşınır.
+                overlap_tail = ""
+                current_chunk: list = []
+                current_len = 0
+
+                for node in sec:
+                    node_len = len(node.text or "")
+                    if current_len + node_len > MAX_SECTION_CHARS and current_chunk:
+                        final_sections.append((current_chunk, overlap_tail))
+                        full_text = "\n".join(n.text or "" for n in current_chunk)
+                        overlap_tail = (
+                            full_text[-SECTION_OVERLAP_CHARS:]
+                            if len(full_text) > SECTION_OVERLAP_CHARS
+                            else full_text
+                        )
+                        current_chunk = [node]
+                        current_len = node_len
+                    else:
+                        current_chunk.append(node)
+                        current_len += node_len
+
+                if current_chunk:
+                    final_sections.append((current_chunk, overlap_tail))
+
+        # ── Aşama 3: Parent node'ları üret ───────────────────────────────────────
         result_nodes: list = []
 
-        for sec_nodes in merged_sections:
+        for sec_nodes, overlap_prefix in final_sections:
             section_id = str(_uuid.uuid4())
 
             indices = [
@@ -445,10 +550,17 @@ class DocumentParser:
             start_idx = min(indices) if indices else 0
             end_idx = max(indices) if indices else 0
 
-            # Parent metni: tüm child'ların metni sırayla birleştirilir
-            parent_text = "\n\n".join(
+            core_text = "\n\n".join(
                 (n.text or "").strip() for n in sec_nodes if (n.text or "").strip()
             )
+
+            # Boyut-tabanlı kesme varsa önceki konu bağlamını öne ekle
+            if overlap_prefix:
+                parent_text = (
+                    f"[Önceki Bölüm Bağlamı: ...{overlap_prefix}]\n\n{core_text}"
+                )
+            else:
+                parent_text = core_text
 
             from llama_index.core.schema import TextNode as _TextNode
 
@@ -459,13 +571,12 @@ class DocumentParser:
                     "file_name": sec_nodes[0].metadata.get("file_name", ""),
                     "node_type": "section",
                     "section_id": section_id,
-                    "node_index": start_idx,  # retriever'ın sıralama için ihtiyacı var
+                    "node_index": start_idx,
                     "section_start_index": start_idx,
                     "section_end_index": end_idx,
                 },
             )
 
-            # Her child'a section referansını ekle
             for child in sec_nodes:
                 child.metadata["section_id"] = section_id
                 child.metadata["section_start_index"] = start_idx
@@ -474,8 +585,9 @@ class DocumentParser:
 
             result_nodes.append(parent_node)
 
-        section_count = len(merged_sections)
-        print(f"[SİSTEM] Section parent'ları oluşturuldu: {section_count} section")
+        print(
+            f"[SİSTEM] Section parent'ları oluşturuldu: {len(final_sections)} section"
+        )
         return result_nodes
 
     # ──────────────────────────────────────────────────────────────────────────
