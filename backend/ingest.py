@@ -12,7 +12,7 @@ from core.vlm_engine import VLMEngine
 def main():
 
     start_time = time.time()
-    pdf_path = "test.pdf"
+    pdf_path = "tablo.pdf"
 
     print("=== VERİ YUTMA (INGESTION) SİSTEMİ BAŞLATILIYOR ===")
 

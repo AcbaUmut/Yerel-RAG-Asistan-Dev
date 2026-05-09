@@ -128,6 +128,11 @@ class DocumentParser:
         )
         text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
         text = re.sub(r"(?:\n[ \t\x0b\f\r\xa0]*){3,}", "\n\n", text)
+
+        # Tablo hücresi içindeki <br> etiketlerini boşlukla değiştir
+        # Örnek: |**Kelime**<br>**devamı**| → |**Kelime devamı**|
+        text = re.sub(r"<br\s*/?>", " ", text)
+
         return text.strip()
 
     # ──────────────────────────────────────────────────────────────────────────
