@@ -71,9 +71,11 @@ class VectorStoreEngine:
         self,
         persist_dir: str = "./backend/chroma_db",
         collection_name: str = "tez_koleksiyonu",
+        sections_collection_name: str = "sections_koleksiyonu",
     ):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
+        self.sections_collection_name = sections_collection_name
 
         print(
             f"[SİSTEM] VectorStoreEngine başlatılıyor... Kayıt dizini: {self.persist_dir}"
@@ -91,23 +93,58 @@ class VectorStoreEngine:
             vector_store=self.vector_store
         )
 
+        # YENİ: parent section'lar için ayrı koleksiyon
+        # Bu koleksiyona sadece ID ile erişeceğiz, benzerlik araması yapmayacağız.
+        # Yine de gerçek embedding'lerle saklıyoruz — ileride doğrudan sorgulama
+        # ya da debug amaçlı ihtiyaç duyulabilir, ve ingest maliyeti zaten tek seferlik.
+        self.sections_collection_name = sections_collection_name
+        self.sections_chroma = self.db_client.get_or_create_collection(
+            sections_collection_name
+        )
+
     def add_nodes(self, nodes, file_name: str):
         if not nodes:
-            print("Uyarı: Veritabanına eklenecek düğüm (node) bulunamadı.")
+            print("Uyarı: Eklenecek node bulunamadı.")
             return None
 
-        try:
-            self.chroma_collection.delete(where={"file_name": file_name})
-            print(
-                f"[SİSTEM] Eski '{file_name}' kayıtları ChromaDB'den başarıyla temizlendi."
-            )
-        except Exception as e:
-            print(f"[UYARI] Eski kayıtlar temizlenemedi: {e}")
+        # Child ve parent'ları ayır
+        child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
+        parent_nodes = [n for n in nodes if n.metadata.get("node_type") == "section"]
 
-        print(f"Toplam {len(nodes)} düğüm vektör uzayına gömülüyor...")
-        index = VectorStoreIndex(nodes=nodes, storage_context=self.storage_context)
-        print("İşlem Başarılı! Düğümler ChromaDB'ye kaydedildi.")
-        return index
+        # Eski kayıtları her iki koleksiyondan da temizle
+        for col in (self.chroma_collection, self.sections_chroma):
+            try:
+                col.delete(where={"file_name": file_name})
+            except Exception as e:
+                print(f"[UYARI] Temizleme sırasında hata: {e}")
+
+        # Child'ları LlamaIndex ile ekle (Jina embedding + HNSW)
+        print(f"  {len(child_nodes)} child node embedding'leniyor...")
+        VectorStoreIndex(nodes=child_nodes, storage_context=self.storage_context)
+
+        # Parent'ları sections_koleksiyonu'na ekle
+        # Jina ile embedding'liyoruz — ID araması da yapılacak ama
+        # gerçek vektörler ilerisi için kullanışlı olur.
+        if parent_nodes:
+            print(f"  {len(parent_nodes)} section parent kaydediliyor...")
+            parent_texts = [n.text for n in parent_nodes]
+            parent_ids = [n.node_id for n in parent_nodes]
+            parent_metadatas = [n.metadata for n in parent_nodes]
+            parent_embeddings = Settings.embed_model._get_text_embeddings(
+                [f"Document: {t}" for t in parent_texts]
+            )
+            self.sections_chroma.add(
+                ids=parent_ids,
+                documents=parent_texts,
+                metadatas=parent_metadatas,
+                embeddings=parent_embeddings,
+            )
+
+        print(
+            f"[SİSTEM] Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}'"
+            f" | {len(parent_nodes)} section → '{self.sections_collection_name}'"
+        )
+        return None
 
 
 if __name__ == "__main__":

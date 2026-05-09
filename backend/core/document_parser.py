@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import uuid as _uuid
 from collections import Counter
 
 import numpy as np
@@ -328,11 +329,11 @@ class DocumentParser:
                 # Bu segmentteki başlıkları tara, son başlığı güncelle.
                 # Regex: # ile başlayan satırları eşler, ** bold marker'larını temizler.
                 heading_matches = re.findall(
-                    r"^#{1,6}\s+(.+?)$", seg["content"], re.MULTILINE
+                    r"^#{1,2}\s+(.+?)$", seg["content"], re.MULTILINE
                 )
                 if heading_matches:
                     last_heading = (
-                        heading_matches[-1]
+                        heading_matches[0]  # [-1] değil [0] — ilk/ana başlık
                         .strip()
                         .replace("**", "")
                         .replace("*", "")
@@ -359,6 +360,123 @@ class DocumentParser:
             f"{text_count} metin node + {vlm_count} VLM node = {len(nodes)} toplam"
         )
         return nodes
+
+    def _create_section_parents(self, nodes: list) -> list:
+        """
+        Child node listesini ## başlıklarına göre section'lara gruplar,
+        her section için bir parent TextNode üretir.
+
+        Section sınırı kuralı:
+            Yeni bir section, yalnızca şu koşulların IKISI birden sağlanıyorsa başlar:
+                1. Karşılaşılan node bir başlık node'u (# veya ## ile başlıyor)
+                2. Mevcut section içinde daha önce en az bir içerik (başlık olmayan) node'u geçilmiş
+
+            Bu kural, ard arda gelen ## başlıklarının tek bir section altında
+            toplanmasını sağlar. Örneğin:
+                [A] "## Güvenlik Prensipleri (Temel)"   → section başlar
+                [B] "## Güvenlik Prensipleri (Ek)"      → section_has_content=False,
+                                                           yeni section AÇILMAZ, [B] aynı section'a eklenir
+                [C] vlm                                  → section_has_content=True
+                [D] "## Yeni Bölüm"                     → section_has_content=True, YENİ section başlar ✓
+
+        MIN_SECTION_CHARS:
+            Parent metni bu değerin altındaysa (örn. sadece bir başlık + küçük VLM),
+            sonraki section ile birleştirilir.
+        """
+
+        MIN_SECTION_CHARS = 600
+
+        # Sadece child node'ları işle; önceki çalışmadan kalan section node'u yoksa bu zaten boş.
+        child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
+
+        # ── Aşama 1: Section sınırlarını tespit et ────────────────────────────────
+        sections: list[list] = []
+        current: list = []
+        section_has_content = False  # Mevcut section'da başlık-dışı içerik var mı?
+
+        for node in child_nodes:
+            text = node.text or ""
+            ntype = node.metadata.get("node_type", "text")
+
+            # Başlık tespiti: text node'u ve ## veya # ile başlıyor
+            is_heading = ntype == "text" and bool(re.match(r"^#{1,2}\s", text.strip()))
+
+            if is_heading:
+                if section_has_content and current:
+                    # Önceki section'da içerik vardı → gerçek bir section sınırı
+                    sections.append(current)
+                    current = [node]
+                    section_has_content = False
+                else:
+                    # Art arda başlık — aynı section'a ekle, sınır oluşturma
+                    current.append(node)
+            else:
+                current.append(node)
+                if text.strip():  # Boş olmayan içerik varsa bayrağı kaldır
+                    section_has_content = True
+
+        if current:
+            sections.append(current)
+
+        # ── Aşama 2: Çok kısa section'ları sonrakiyle birleştir ──────────────────
+        merged_sections: list[list] = []
+        i = 0
+        while i < len(sections):
+            sec = sections[i]
+            combined_len = sum(len(n.text or "") for n in sec)
+            if combined_len < MIN_SECTION_CHARS and i + 1 < len(sections):
+                # Bu section çok kısa, sonrakine ekle
+                sections[i + 1] = sec + sections[i + 1]
+            else:
+                merged_sections.append(sec)
+            i += 1
+
+        # ── Aşama 3: Parent node'ları üret, child'lara metadata ekle ─────────────
+        result_nodes: list = []
+
+        for sec_nodes in merged_sections:
+            section_id = str(_uuid.uuid4())
+
+            indices = [
+                n.metadata["node_index"]
+                for n in sec_nodes
+                if n.metadata.get("node_index") is not None
+            ]
+            start_idx = min(indices) if indices else 0
+            end_idx = max(indices) if indices else 0
+
+            # Parent metni: tüm child'ların metni sırayla birleştirilir
+            parent_text = "\n\n".join(
+                (n.text or "").strip() for n in sec_nodes if (n.text or "").strip()
+            )
+
+            from llama_index.core.schema import TextNode as _TextNode
+
+            parent_node = _TextNode(
+                id_=section_id,
+                text=parent_text,
+                metadata={
+                    "file_name": sec_nodes[0].metadata.get("file_name", ""),
+                    "node_type": "section",
+                    "section_id": section_id,
+                    "node_index": start_idx,  # retriever'ın sıralama için ihtiyacı var
+                    "section_start_index": start_idx,
+                    "section_end_index": end_idx,
+                },
+            )
+
+            # Her child'a section referansını ekle
+            for child in sec_nodes:
+                child.metadata["section_id"] = section_id
+                child.metadata["section_start_index"] = start_idx
+                child.metadata["section_end_index"] = end_idx
+                result_nodes.append(child)
+
+            result_nodes.append(parent_node)
+
+        section_count = len(merged_sections)
+        print(f"[SİSTEM] Section parent'ları oluşturuldu: {section_count} section")
+        return result_nodes
 
     # ──────────────────────────────────────────────────────────────────────────
     # ANA METOD
@@ -407,6 +525,9 @@ class DocumentParser:
 
         # ── Adım 5 ───────────────────────────────────────────────────────────
         nodes = self._chunking_with_vlm_awareness(enriched_text, file_path)
+
+        # parse() içinde, _chunking_with_vlm_awareness'tan sonra
+        nodes = self._create_section_parents(nodes)  # ← YENİ: parent-child katmanı
 
         print(f"Başarılı! Doküman {len(nodes)} adet düğüme ayrıştırıldı.")
         return nodes

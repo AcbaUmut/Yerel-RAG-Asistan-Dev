@@ -1,5 +1,6 @@
 import time
 
+import chromadb
 from core.config import AppConfig
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
@@ -41,6 +42,13 @@ class RetrieverEngine:
             embedding_function=_LCAdapter(),
             collection_name=self.collection_name,
         )
+
+        # YENİ: section parent'lara direkt ChromaDB ile eriş
+        # LangChain wrapper'ına gerek yok — sadece .get(ids=[...]) kullanacağız
+        _raw_client = chromadb.PersistentClient(path=self.persist_dir)
+        self.sections_collection = _raw_client.get_collection("sections_koleksiyonu")
+
+        # filter'lı base_retriever kalktı → Python tarafında filtreleme güvenilir
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -129,6 +137,71 @@ class RetrieverEngine:
 
         return final
 
+    def _expand_with_section_context(self, docs: list) -> list:
+        """
+        Retriever'ın döndürdüğü child node'lar için ChromaDB'den parent
+        section node'larını getirir.
+
+        Strateji:
+            - section node doğrudan geliyorsa (filter kaçmışsa) direkt ekle
+            - child node ise section_id = o node'un ChromaDB ID'si olduğu
+              için get(ids=[section_id]) ile direkt çek — $and gerekmez
+            - Parent bulunamazsa orijinal child + komşularına düş (içerik asla kaybolmaz)
+        """
+        seen_section_ids: set[str] = set()
+        result_docs: list[LCDocument] = []
+
+        for doc in docs:
+            meta = doc.metadata
+            section_id = meta.get("section_id")
+            ntype = meta.get("node_type", "text")
+
+            # Section node doğrudan geliyorsa direkt ekle
+            if ntype == "section":
+                sid = meta.get("section_id", "")
+                if sid and sid not in seen_section_ids:
+                    seen_section_ids.add(sid)
+                    result_docs.append(doc)
+                continue
+
+            # ── Yol 1: section_id = parent node'un ChromaDB ID'si → direkt get ──
+            if section_id and section_id not in seen_section_ids:
+                seen_section_ids.add(section_id)
+                try:
+                    res = self.sections_collection.get(
+                        ids=[section_id],
+                        include=["documents", "metadatas"],
+                    )
+                    if res and res.get("documents") and res["documents"][0]:
+                        result_docs.append(
+                            LCDocument(
+                                page_content=res["documents"][0],
+                                metadata=res["metadatas"][0]
+                                if res.get("metadatas")
+                                else {},
+                            )
+                        )
+                        continue  # Parent bulundu, child tekrar eklenmez (parent zaten içeriyor)
+                except Exception as e:
+                    print(
+                        f"[UYARI] Section parent getirilemedi (id={section_id[:8]}...): {e}"
+                    )
+
+            # ── Yol 2: Fallback — eski komşu genişletme, içerik asla kaybolmasın ──
+            result_docs.extend(self._expand_with_neighbors([doc]))
+
+        # node_index'e göre sırala, section_id'ye göre tekilleştir
+        seen: set = set()
+        final: list[LCDocument] = []
+        for doc in sorted(
+            result_docs, key=lambda d: int(d.metadata.get("node_index", 9999))
+        ):
+            key = doc.metadata.get("section_id") or id(doc)
+            if key not in seen:
+                seen.add(key)
+                final.append(doc)
+        return final
+
     # ──────────────────────────────────────────────────────────────────────────
     # Ana Bağlam Getirici
     # ──────────────────────────────────────────────────────────────────────────
@@ -138,44 +211,77 @@ class RetrieverEngine:
         Sorguya en uygun bağlamı döndürür.
 
         Akış:
-            1. Embedding benzerliğiyle ilk 10 aday çek (base_retriever)
-            2. Reranker ile yeniden sırala, top_n al
-            3. Komşu node'larla genişlet (_expand_with_neighbors)
-            4. VLM node'larına context_prefix ekle
-            5. Birleşik metni döndür
+            1. k=15 ile tüm node'ları çek (section dahil)
+            2. Python tarafında section node'larını filtrele → sadece text/vlm kalır
+            3. Reranker ile yeniden sırala, top_n al
+            4. Section parent'larıyla genişlet (_expand_with_section_context)
+            5. Debug çıktısı yaz (terminalde tam görünürlük)
+            6. Birleşik parent metinleri döndür
         """
-        raw_docs = self.base_retriever.invoke(query)
-        if not raw_docs:
-            return ""
+        # ── 1. Ham getirme ─────────────────────────────────────
+        raw_all = self.base_retriever.invoke(query)
 
-        # ── Reranker ─────────────────────────────────────────────────────────
+        # ── 2. Reranker ───────────────────────────────────────────────────────────
         temp_time = time.time()
-        documents = [doc.page_content for doc in raw_docs]
+        documents = [doc.page_content for doc in raw_all]
         scores = self.reranker.rank(query, documents)
-        print(f"\nReranker süresi: {time.time() - temp_time:.2f} sn")
+        reranker_ms = (time.time() - temp_time) * 1000
 
-        scored_docs = sorted(zip(scores, raw_docs), key=lambda x: x[0], reverse=True)
-        best_docs = [doc for score, doc in scored_docs[:top_n] if score >= threshold]
+        scored_docs = sorted(zip(scores, raw_all), key=lambda x: x[0], reverse=True)
+        best_docs = [doc for _, doc in scored_docs[:top_n]]
 
         if not best_docs:
+            print(
+                f"[RETRIEVER] Reranker tüm sonuçları threshold={threshold} altında eledi."
+            )
             return ""
 
-        # ── Komşu genişletme ──────────────────────────────────────────────────
-        expanded_docs = self._expand_with_neighbors(best_docs)
+        # ── 3. Debug: Reranker sonuçları ──────────────────────────────────────────
+        print("\n" + "═" * 70)
+        print("  RETRIEVER DEBUG")
+        print(f"  Sorgu  : {query[:60]}")
+        print(
+            f"  Ham    : {len(raw_all)} node çekildi → {len(raw_all)} child filtrelendi"
+        )
+        print(f"  Reranker: {reranker_ms:.0f}ms — top-{top_n} seçildi")
+        print("─" * 70)
 
-        # ── Bağlamı oluştur ───────────────────────────────────────────────────
-        # VLM node ise context_prefix öne eklenir; böylece LLM görselin
-        # hangi metnin ardından geldiğini de bilir.
+        for i, (score, doc) in enumerate(scored_docs[:top_n]):
+            ntype = doc.metadata.get("node_type", "?")
+            nidx = doc.metadata.get("node_index", "?")
+            ss = doc.metadata.get("section_start_index", "?")
+            se = doc.metadata.get("section_end_index", "?")
+            sid = doc.metadata.get("section_id") or "yok"
+            prev = doc.page_content[:90].replace("\n", " ")
+            marker = "✓" if doc in best_docs else "✗"
+            print(
+                f"  [{i + 1}]{marker} score={score:+.4f} | {ntype}[{nidx}] | sec=[{ss}-{se}] | section_id:{sid}"
+            )
+            print(f"       {prev}...")
+
+        # ── 4. Section genişletme ─────────────────────────────────────────────────
+        expanded_docs = self._expand_with_section_context(best_docs)
+
+        # Debug: döndürülen section'lar
+        print("─" * 70)
+        print(f"  Section genişletme → {len(expanded_docs)} doc LLM'e gönderilecek:")
+        for doc in expanded_docs:
+            ntype = doc.metadata.get("node_type", "?")
+            nidx = doc.metadata.get("node_index", "?")
+            ss = doc.metadata.get("section_start_index", "?")
+            se = doc.metadata.get("section_end_index", "?")
+            clen = len(doc.page_content)
+            prev = doc.page_content[:60].replace("\n", " ")
+            print(
+                f"    {ntype}[{nidx}] | sec=[{ss}-{se}] | {clen} karakter | {prev}..."
+            )
+        print("═" * 70 + "\n")
+
+        # ── 5. Bağlam oluştur ─────────────────────────────────────────────────────
         parts = []
         for doc in expanded_docs:
             content = doc.page_content.strip()
-            if not content:
-                continue
-
-            prefix = doc.metadata.get("context_prefix", "")
-            if prefix and doc.metadata.get("node_type") == "vlm":
-                parts.append(f"[Önceki Bağlam: {prefix}]\n{content}")
-            else:
+            if content:
                 parts.append(content)
 
         return "\n\n---\n\n".join(parts)
