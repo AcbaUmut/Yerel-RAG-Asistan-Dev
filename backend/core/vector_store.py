@@ -1,3 +1,5 @@
+import json
+import os
 from typing import List
 
 import chromadb
@@ -71,11 +73,9 @@ class VectorStoreEngine:
         self,
         persist_dir: str = "./backend/chroma_db",
         collection_name: str = "tez_koleksiyonu",
-        sections_collection_name: str = "sections_koleksiyonu",
     ):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
-        self.sections_collection_name = sections_collection_name
 
         print(
             f"[SİSTEM] VectorStoreEngine başlatılıyor... Kayıt dizini: {self.persist_dir}"
@@ -93,58 +93,73 @@ class VectorStoreEngine:
             vector_store=self.vector_store
         )
 
-        # YENİ: parent section'lar için ayrı koleksiyon
-        # Bu koleksiyona sadece ID ile erişeceğiz, benzerlik araması yapmayacağız.
-        # Yine de gerçek embedding'lerle saklıyoruz — ileride doğrudan sorgulama
-        # ya da debug amaçlı ihtiyaç duyulabilir, ve ingest maliyeti zaten tek seferlik.
-        self.sections_collection_name = sections_collection_name
-        self.sections_chroma = self.db_client.get_or_create_collection(
-            sections_collection_name
-        )
-
     def add_nodes(self, nodes, file_name: str):
         if not nodes:
             print("Uyarı: Eklenecek node bulunamadı.")
             return None
 
-        # Child ve parent'ları ayır
         child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
         parent_nodes = [n for n in nodes if n.metadata.get("node_type") == "section"]
 
-        # Eski kayıtları her iki koleksiyondan da temizle
-        for col in (self.chroma_collection, self.sections_chroma):
-            try:
-                col.delete(where={"file_name": file_name})
-            except Exception as e:
-                print(f"[UYARI] Temizleme sırasında hata: {e}")
+        # Child'ları temizle ve ekle (değişmedi)
+        try:
+            self.chroma_collection.delete(where={"file_name": file_name})
+        except Exception as e:
+            print(f"[UYARI] Temizleme sırasında hata: {e}")
 
-        # Child'ları LlamaIndex ile ekle (Jina embedding + HNSW)
         print(f"  {len(child_nodes)} child node embedding'leniyor...")
         VectorStoreIndex(nodes=child_nodes, storage_context=self.storage_context)
 
-        # Parent'ları sections_koleksiyonu'na ekle
-        # Jina ile embedding'liyoruz — ID araması da yapılacak ama
-        # gerçek vektörler ilerisi için kullanışlı olur.
+        # Parent'ları JSON'a kaydet — embedding hesabı yok, salt metin deposu
         if parent_nodes:
-            print(f"  {len(parent_nodes)} section parent kaydediliyor...")
-            parent_texts = [n.text for n in parent_nodes]
-            parent_ids = [n.node_id for n in parent_nodes]
-            parent_metadatas = [n.metadata for n in parent_nodes]
-            parent_embeddings = Settings.embed_model._get_text_embeddings(
-                [f"Document: {t}" for t in parent_texts]
-            )
-            self.sections_chroma.add(
-                ids=parent_ids,
-                documents=parent_texts,
-                metadatas=parent_metadatas,
-                embeddings=parent_embeddings,
-            )
+            print(f"  {len(parent_nodes)} section parent JSON'a kaydediliyor...")
+            self._save_sections(parent_nodes, file_name)
 
         print(
             f"[SİSTEM] Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}'"
-            f" | {len(parent_nodes)} section → '{self.sections_collection_name}'"
+            f" | {len(parent_nodes)} section → sections.json"
         )
         return None
+
+    def _save_sections(self, parent_nodes: list, file_name: str) -> None:
+        """
+        Section parent node'larını JSON dosyasına kaydeder.
+
+        Neden JSON, neden ChromaDB değil?
+            Section parent'lar hiçbir zaman similarity araması ile bulunmaz.
+            Erişim her zaman section_id ile yapılır: sections_map[section_id].
+            Bu ID bazlı erişim için vektör veritabanı gerekmiyor; saf bir
+            dict (JSON) aynı işi O(1) ile yapar, embedding maliyeti sıfır,
+            HNSW indeksi oluşmaz.
+
+        Dosya yapısı:
+            { "<section_id>": {"text": "...", "metadata": {...}}, ... }
+        """
+
+        sections_file = os.path.join(self.persist_dir, "sections.json")
+
+        # Mevcut dosyayı yükle (başka PDF'lerden gelen section'lar korunur)
+        existing: dict = {}
+        if os.path.exists(sections_file):
+            with open(sections_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+
+        # Bu dosyaya ait eski section'ları sil (yeniden ingest durumu)
+        existing = {
+            sid: data
+            for sid, data in existing.items()
+            if data.get("metadata", {}).get("file_name") != file_name
+        }
+
+        # Yeni section'ları ekle
+        for node in parent_nodes:
+            existing[node.node_id] = {
+                "text": node.text,
+                "metadata": node.metadata,
+            }
+
+        with open(sections_file, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

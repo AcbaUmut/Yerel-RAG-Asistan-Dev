@@ -330,7 +330,6 @@ class DocumentParser:
         base_metadata = {"file_name": file_path}
         nodes: list = []
         last_heading = ""  # Son görülen başlık metni
-        last_text_tail = ""  # Bir önceki metin segmentinin ham içeriği
 
         for seg in merged:
             if seg["type"] == "vlm":
@@ -343,7 +342,6 @@ class DocumentParser:
                     metadata={
                         **base_metadata,
                         "node_type": "vlm",
-                        "context_prefix": last_text_tail[-300:].strip(),
                         "node_index": len(nodes),
                     },
                 )
@@ -377,10 +375,6 @@ class DocumentParser:
                     for tn in text_nodes:
                         tn.metadata["node_index"] = len(nodes)
                         nodes.append(tn)
-
-                last_text_tail = seg["content"]
-                # Not: last_text_tail tüm segmenti tutar; VLM'lerin context_prefix'i
-                # bölünmüş değil orijinal bağlamdan hesaplanır.
 
         vlm_count = sum(1 for n in nodes if n.metadata.get("node_type") == "vlm")
         text_count = len(nodes) - vlm_count

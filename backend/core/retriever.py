@@ -1,6 +1,7 @@
+import json
+import os
 import time
 
-import chromadb
 from core.config import AppConfig
 from core.vector_store import JinaEmbeddings
 from langchain_chroma import Chroma
@@ -43,10 +44,14 @@ class RetrieverEngine:
             collection_name=self.collection_name,
         )
 
-        # YENİ: section parent'lara direkt ChromaDB ile eriş
-        # LangChain wrapper'ına gerek yok — sadece .get(ids=[...]) kullanacağız
-        _raw_client = chromadb.PersistentClient(path=self.persist_dir)
-        self.sections_collection = _raw_client.get_collection("sections_koleksiyonu")
+        sections_file = os.path.join(self.persist_dir, "sections.json")
+        self.sections_map: dict = {}
+        if os.path.exists(sections_file):
+            with open(sections_file, "r", encoding="utf-8") as _f:
+                self.sections_map = json.load(_f)
+            print(f"[SİSTEM] {len(self.sections_map)} section parent belleğe yüklendi.")
+        else:
+            print("[UYARI] sections.json bulunamadı. Önce ingest.py çalıştırın.")
 
         # filter'lı base_retriever kalktı → Python tarafında filtreleme güvenilir
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
@@ -155,27 +160,21 @@ class RetrieverEngine:
             meta = doc.metadata
             section_id = meta.get("section_id")
 
-            # ── Yol 1: section_id = parent node'un ChromaDB ID'si → direkt get ──
+            # YENİ — dict lookup, anlık:
             if section_id and section_id not in seen_section_ids:
                 seen_section_ids.add(section_id)
-                try:
-                    res = self.sections_collection.get(
-                        ids=[section_id],
-                        include=["documents", "metadatas"],
-                    )
-                    if res and res.get("documents") and res["documents"][0]:
-                        result_docs.append(
-                            LCDocument(
-                                page_content=res["documents"][0],
-                                metadata=res["metadatas"][0]
-                                if res.get("metadatas")
-                                else {},
-                            )
+                section_data = self.sections_map.get(section_id)
+                if section_data:
+                    result_docs.append(
+                        LCDocument(
+                            page_content=section_data["text"],
+                            metadata=section_data.get("metadata", {}),
                         )
-                        continue  # Parent bulundu, child tekrar eklenmez (parent zaten içeriyor)
-                except Exception as e:
+                    )
+                    continue
+                else:
                     print(
-                        f"[UYARI] Section parent getirilemedi (id={section_id[:8]}...): {e}"
+                        f"[UYARI] Section bulunamadı (id={section_id[:8]}...): sections.json'da yok"
                     )
 
             # ── Yol 2: Fallback — eski komşu genişletme, içerik asla kaybolmasın ──
@@ -233,9 +232,7 @@ class RetrieverEngine:
         print("\n" + "═" * 70)
         print("  RETRIEVER DEBUG")
         print(f"  Sorgu  : {query[:60]}")
-        print(
-            f"  Ham    : {len(raw_docs)} node çekildi → {len(raw_docs)} child filtrelendi"
-        )
+        print(f"  Ham    : {len(raw_docs)} node çekildi")
         print(f"  Reranker: {reranker_ms:.0f}ms — top-{top_n} seçildi")
         print("─" * 70)
 
@@ -272,7 +269,7 @@ class RetrieverEngine:
                 if skip > 0:
                     content_for_preview = content_for_preview[skip + 2 :]
 
-            prev = doc.page_content[:60].replace("\n", " ")
+            prev = content_for_preview[:60].replace("\n", " ")
             print(
                 f"    {ntype}[{nidx}] | sec=[{ss}-{se}] | {clen} karakter | {prev}..."
             )
