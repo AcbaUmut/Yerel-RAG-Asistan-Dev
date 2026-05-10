@@ -12,7 +12,7 @@ from core.vlm_engine import VLMEngine
 def main():
 
     start_time = time.time()
-    pdf_path = "test1.pdf"
+    pdf_path = "tablo.pdf"
 
     print("=== VERİ YUTMA (INGESTION) SİSTEMİ BAŞLATILIYOR ===")
 
@@ -41,12 +41,16 @@ def main():
     gc.collect()
     print("[SİSTEM] VRAM başarıyla boşaltıldı. Kutsal 8GB sınırı güvende.\n")
 
-    vector_engine = VectorStoreEngine()
-    print(
-        "Düğümler Jina ile vektörlenip ChromaDB'ye yazılıyor. CPU hızına bağlı olarak sürebilir..."
-    )
-
+    # Embedding'i GPU'da çalıştır
+    vector_engine = VectorStoreEngine(embed_device="cuda")
+    print("Düğümler Jina (GPU) ile vektörleniyor...")
     vector_engine.add_nodes(nodes=chunks, file_name=pdf_path)
+
+    # İş bitti — VRAM'i tekrar boşalt (sıradaki aşamada LLM gelecekse hazır)
+    vector_engine.unload()
+    del vector_engine
+    gc.collect()
+    print("[SİSTEM] Embedding VRAM'den tahliye edildi.\n")
 
     print(f"\n=== İŞLEM BAŞARILI! (Toplam Süre: {time.time() - start_time:.2f} sn) ===")
     print("VLM analizleri metne gömüldü ve Veritabanı güncellendi.")

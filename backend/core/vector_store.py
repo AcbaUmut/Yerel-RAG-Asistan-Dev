@@ -1,9 +1,10 @@
+import gc
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 import chromadb
-import torch
+import numpy as np
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -12,49 +13,127 @@ from transformers import AutoTokenizer
 
 
 class JinaEmbeddings(BaseEmbedding):
+    """
+    Jina V5 Nano ONNX embedding sarmalayıcısı (numpy I/O).
+
+    device:
+        "cuda" → CUDAExecutionProvider, VRAM'e yüklenir.
+        "cpu"  → CPUExecutionProvider, RAM'de kalır.
+
+    PyTorch CUDA build bağımlılığı yok; ORT host↔device kopyayı yönetir.
+    """
+
     class Config:
         arbitrary_types_allowed = True
 
-    def __init__(self):
+    def __init__(self, device: str = "cuda"):
         super().__init__(model_name="jina-v5-nano-onnx")
-        print("[SİSTEM] Jina V5 Nano ONNX (CPU) yükleniyor...")
-        model_dir = "./backend/models/jina-v5-nano"
+        if device not in ("cuda", "cpu"):
+            raise ValueError(f"device 'cuda' veya 'cpu' olmalı, aldı: {device}")
+
+        self._device = device
+        self._model_dir = "./backend/models/jina-v5-nano"
+        self._tokenizer: Optional[AutoTokenizer] = None
+        self._model: Optional[ORTModelForFeatureExtraction] = None
+        self._load()
+
+    # ── Yükleme / Tahliye ────────────────────────────────────────────────
+    def _load(self) -> None:
+        print(f"[SİSTEM] Jina V5 Nano ONNX ({self._device.upper()}) yükleniyor...")
 
         self._tokenizer = AutoTokenizer.from_pretrained(
-            model_dir, trust_remote_code=True, local_files_only=True
+            self._model_dir, trust_remote_code=True, local_files_only=True
         )
-        # Resmi dokümantasyondaki kullanım — optimum wrapper
+
+        if self._device == "cuda":
+            provider = "CUDAExecutionProvider"
+            provider_options = [
+                {
+                    "device_id": 0,
+                    "arena_extend_strategy": "kSameAsRequested",
+                    "cudnn_conv_algo_search": "DEFAULT",
+                    "do_copy_in_default_stream": True,
+                }
+            ]
+        else:
+            provider = "CPUExecutionProvider"
+            provider_options = None
+
         self._model = ORTModelForFeatureExtraction.from_pretrained(
-            model_dir,
+            self._model_dir,
             subfolder="onnx",
             file_name="model.onnx",
-            provider="CPUExecutionProvider",
+            provider=provider,
+            provider_options=provider_options,
             trust_remote_code=True,
             local_files_only=True,
         )
-        print("[SİSTEM] Jina V5 Nano ONNX başarıyla yüklendi.")
 
+        # Sessiz CPU fallback kontrolü — ORT yanlış kuruluysa CUDA ister,
+        # uyarı bile vermeden CPU'ya düşebilir.
+        active = self._model.model.get_providers()
+        if self._device == "cuda" and "CUDAExecutionProvider" not in active:
+            raise RuntimeError(
+                f"CUDA provider yüklenemedi. Aktif provider'lar: {active}\n"
+                "Kontrol listesi:\n"
+                "  1) pip uninstall onnxruntime onnxruntime-gpu -y\n"
+                "  2) pip install onnxruntime-gpu\n"
+                "  3) nvidia-smi → sürücü 525+ olmalı (CUDA 12.x için)\n"
+                "  4) Windows'ta cuDNN bin klasörü PATH'e eklenmiş olmalı"
+            )
+
+        print(f"[SİSTEM] Jina V5 Nano ONNX hazır. Aktif provider: {active[0]}")
+
+    def unload(self) -> None:
+        """ORT InferenceSession'ı serbest bırakır; CUDA buffer'lar destructor'da temizlenir."""
+        print(f"[SİSTEM] Jina embedding ({self._device.upper()}) tahliye ediliyor...")
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
+        # Not: torch.cuda.empty_cache() ÇAĞIRILMIYOR.
+        # ORT'un CUDA bellek arenası torch'tan ayrıdır; ORT session destructor'u
+        # kendi buffer'larını serbest bırakır. del + gc yeterli.
+        print("[SİSTEM] Jina embedding belleği temizlendi.")
+
+    # ── Encode (numpy I/O) ───────────────────────────────────────────────
     def _encode(self, texts: List[str]) -> List[List[float]]:
-        inputs = self._tokenizer(
+        if self._model is None or self._tokenizer is None:
+            raise RuntimeError(
+                "Model tahliye edilmiş; tekrar JinaEmbeddings() oluştur."
+            )
+
+        # Tokenizer'dan numpy iste — torch tensor üretimini atla.
+        enc = self._tokenizer(
             texts,
             padding=True,
             truncation=True,
-            max_length=2048,  # max_lenght = 8192 maksimum.
-            return_tensors="pt",
+            max_length=2048,
+            return_tensors="np",
         )
-        # Resmi dokümantasyondaki pooling — last-token pooling
-        with torch.no_grad():
-            outputs = self._model(**inputs)
 
-        last_hidden = outputs.last_hidden_state
-        seq_lengths = inputs["attention_mask"].sum(dim=1) - 1
-        embeddings = last_hidden[torch.arange(last_hidden.size(0)), seq_lengths]
+        # ORT InferenceSession'a doğrudan numpy ver.
+        # CUDA provider aktifse host→device kopya ORT içinde yapılır.
+        ort_inputs = {
+            "input_ids": enc["input_ids"].astype(np.int64),
+            "attention_mask": enc["attention_mask"].astype(np.int64),
+        }
+        outputs = self._model.model.run(None, ort_inputs)
+        last_hidden = outputs[0]  # (batch, seq, hidden), numpy
+
+        # Last-token pooling (resmi Jina kullanımı)
+        attention_mask = enc["attention_mask"]
+        seq_lengths = attention_mask.sum(axis=1) - 1
+        batch_idx = np.arange(last_hidden.shape[0])
+        embeddings = last_hidden[batch_idx, seq_lengths]
 
         # L2 normalize
-        norms = embeddings.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        embeddings = (embeddings / norms).numpy()
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        embeddings = embeddings / norms
+
         return embeddings.tolist()
 
+    # ── BaseEmbedding kontratı ───────────────────────────────────────────
     def _get_text_embedding(self, text: str) -> List[float]:
         return self._encode([f"Document: {text}"])[0]
 
@@ -73,15 +152,15 @@ class VectorStoreEngine:
         self,
         persist_dir: str = "./backend/chroma_db",
         collection_name: str = "tez_koleksiyonu",
+        embed_device: str = "cuda",  # ← yeni
     ):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
 
-        print(
-            f"[SİSTEM] VectorStoreEngine başlatılıyor... Kayıt dizini: {self.persist_dir}"
-        )
+        print(f"[SİSTEM] VectorStoreEngine başlatılıyor... ({embed_device.upper()})")
 
-        Settings.embed_model = JinaEmbeddings()
+        self.embed_model = JinaEmbeddings(device=embed_device)  # ← referansı tut
+        Settings.embed_model = self.embed_model
         Settings.llm = None
 
         self.db_client = chromadb.PersistentClient(path=self.persist_dir)
@@ -92,6 +171,14 @@ class VectorStoreEngine:
         self.storage_context = StorageContext.from_defaults(
             vector_store=self.vector_store
         )
+
+    def unload(self) -> None:
+        """Embedding modelini bellekten tahliye eder."""
+        if getattr(self, "embed_model", None) is not None:
+            self.embed_model.unload()
+            self.embed_model = None
+        Settings.embed_model = None
+        gc.collect()
 
     def add_nodes(self, nodes, file_name: str):
         if not nodes:

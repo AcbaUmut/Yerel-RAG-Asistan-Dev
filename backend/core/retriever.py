@@ -17,7 +17,7 @@ class RetrieverEngine:
 
         print("[SİSTEM] Retriever modelleri belleğe alınıyor...")
 
-        jina = JinaEmbeddings()
+        jina = JinaEmbeddings(device="cpu")
 
         class _LCAdapter:
             def embed_documents(self, texts):

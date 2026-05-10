@@ -1,4 +1,5 @@
 # import os
+import gc
 import time
 
 from core.config import AppConfig
@@ -28,6 +29,7 @@ def main():
 
     retriever.unload()
     del retriever
+    gc.collect()
 
     print("[3/4] Gemma Modeli VRAM'e yükleniyor...")
     check_time = time.time()
@@ -45,6 +47,7 @@ def main():
 
     llm.unload()
     del llm
+    gc.collect()
 
 
 if __name__ == "__main__":
