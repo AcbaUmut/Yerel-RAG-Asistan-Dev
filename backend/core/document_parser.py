@@ -616,7 +616,7 @@ class DocumentParser:
             doc=file_path,
             write_images=True,
             image_path=temp_img_dir,
-            dpi=300,
+            dpi=235,
             page_chunks=True,
         )
 

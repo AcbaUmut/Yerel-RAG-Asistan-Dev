@@ -17,6 +17,6 @@ class AppConfig:
     LLM_MAX_TOKENS = 1536
     LLM_TEMPERATURE = 0.1
 
-    VLM_N_CTX = 8192
+    VLM_N_CTX = 6144
     VLM_MAX_TOKENS = 1536
     VLM_TEMPERATURE = 0.0
