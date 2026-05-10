@@ -7,4 +7,4 @@ backend/chroma_db/
 backend/data/
 .vscode/
 *.pdf
-.json
+*.json
