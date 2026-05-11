@@ -240,29 +240,235 @@ class DocumentParser:
     # BÖLÜM 5 — VLM Farkındalıklı Hibrit Chunker  ← YENİ
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _split_on_internal_headings(self, text: str) -> list[str]:
+    def _collect_slide_titles(self, text: str) -> set:
         """
-        Bir metin bloğu içindeki ## başlıklarını bölme noktası olarak kullanır.
+        Metinde 2+ kez tekrar eden ## başlıklarını bulur.
 
-        Problem: pymupdf4llm bazen iki farklı slaytta aynı metin bloğuna düşen
-        içerikleri tek bir markdown bloğu olarak çıkarır. SentenceSplitter bunu
-        ## sınırından değil, cümle/boyut sınırından böler. Sonuç: "PUKÖ" ve
-        "Siber Tehdit" gibi tamamen farklı konular tek bir text node'una girer.
-        _create_section_parents bu node'u section sınırı olarak tanıyamaz çünkü
-        node başında ## yoktur.
+        Slayt PDF'lerinde aynı başlık birden çok slaytta tekrar eder
+        ("Tablo Yapım Kuralları" 3 kez gibi). Bunlar yeni bölüm sınırı değil,
+        aynı konunun farklı sayfalarıdır. Bu metotla tekrar eden başlıkları
+        toplayıp, _split_on_internal_headings'te split noktası olarak
+        saymayacağız. Sonuç: ilgili tüm slaytlar tek section'da kalır,
+        başlıkla içerik kopmaz.
 
-        Fix: Her text segmentini SentenceSplitter'a göndermeden önce içindeki
-        ## başlıklarından parçalıyoruz. Her parça ayrı node olunca, başlığıyla
-        başlayan parçalar section sınırı olarak düzgün tanınır.
-
-        Örnek:
-            Input : "- Planla: BGYS...\n\n## Siber Tehdit\n...\n## Siber Saldırı\n..."
-            Output: ["- Planla: BGYS...", "## Siber Tehdit\n...", "## Siber Saldırı\n..."]
+        Karşılaştırma normalize edilir (case-fold + markdown temizliği) ki
+        "**Tablolar**" ile "tablolar" aynı sayılsın.
         """
-        # Başa \n ekliyoruz ki metnin ta başındaki ## de yakalanabilsin
-        parts = re.split(r"\n(?=#{1,2} )", "\n" + text)
-        result = [p.strip() for p in parts if p.strip()]
-        return result if result else [text]
+        from collections import Counter
+
+        counts = Counter()
+        for m in re.finditer(r"^#{1,3}\s+(.+)$", text, flags=re.MULTILINE):
+            body = m.group(1).strip()
+            # Markdown süslerini at, casefold ile karşılaştırılabilir hale getir
+            normalized = re.sub(r"[*_`]+", "", body).strip().casefold()
+            if normalized:
+                counts[normalized] += 1
+
+        return {title for title, n in counts.items() if n >= 2}
+
+    def _is_real_heading(self, line: str) -> bool:
+        """
+        '#' ile başlayan bir satırın gerçek başlık mı yoksa pymupdf4llm'in
+        font-tabanlı yanlış pozitifi mi olduğuna karar verir.
+
+        Yanlış pozitif kaynakları:
+            - Büyük puntolu bullet:    "# * Verilerin özetlenmesi..."
+            - Büyük puntolu cümle:     "# Sayısal verilerin... grafik denir."
+            - Formül/sonuç satırı:     "## χ² = 0,864 P= 0,50"
+            - Tek karakter / sembol:   "## ?"
+            - Paragraf uzunluğu:       "## ... 200 karakterlik anlatı"
+
+        Heuristikler her birini ayrı eler. Hepsinden geçen satır gerçek başlıktır.
+
+        Tablo/Şekil/Grafik captionları cümle gibi bitse bile başlık sayılır;
+        bunlar gerçek bölüm sınırlarıdır.
+        """
+        stripped = line.strip()
+        m = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        if not m:
+            return False
+
+        body = m.group(2).strip()
+        body_clean = re.sub(r"[*_`]+", "", body).strip()
+
+        # H1 — Bullet ile başlıyor → gerçekte bullet
+        if re.match(r"^[\*•\u2022\-]\s", body):
+            return False
+
+        # H2 — Boyut filtresi: çok kısa veya paragraf uzunluğunda
+        if len(body_clean) < 3 or len(body_clean) > 120:
+            return False
+
+        # H3 — Cümle gibi bitiyor (. ! ?) ve yeterince uzun
+        #      Caption (Tablo X. / Şekil X.) istisna — bunlar gerçek başlık
+        if len(body_clean) > 35 and body_clean[-1] in ".!?":
+            if not re.match(r"^(Tablo|Şekil|Grafik|Figure|Table)\s+\d+", body_clean):
+                return False
+
+        # H4 — Formül baskın: kısa metin + eşitlik/karşılaştırma + sayı
+        if len(body_clean) < 50 and re.search(r"[=<>]\s*\d", body_clean):
+            return False
+
+        return True
+
+    def _split_on_internal_headings(
+        self, text: str, slide_titles: set = None
+    ) -> list[str]:
+        """
+        Bir metin bloğunu GERÇEK '##' başlıklarından parçalar; sahte başlıkları
+        bölme noktası olarak kullanmaz. Bölme sonrası MIN_SEGMENT_LEN altındaki
+        parçaları komşusuyla birleştirir — başlık-only orphan bırakmaz.
+
+        Birleştirme kuralı:
+            Önce ileri merge: küçük parça → bir sonrakinin başına yapışır.
+            Bu yön tercih edilir çünkü heading + içerik bağıntısının doğru yönü budur:
+            '## Daire/Pay Grafikler' başlığı kendi altındaki içeriğe yapışır.
+
+            İleri yön mümkün değilse (parça en sondaysa) geri merge yapılır.
+
+        slide_titles parametresi: belgede 2+ kez tekrar eden başlıkların
+        normalize edilmiş set'i. Bu set'teki başlıklar split noktası olarak
+        sayılmaz; aynı konunun farklı slaytları bütün halinde kalır.
+        """
+        slide_titles = slide_titles or set()
+
+        # Adım 1 — Aday split noktalarını bul
+        text_with_lead = "\n" + text
+        candidates = list(re.finditer(r"\n(#{1,2})\s+([^\n]+)", text_with_lead))
+
+        # Sadece gerçek başlıkları split noktası say.
+        # Slayt başlığı: belgede 2+ kez tekrar eden başlık. İLK geçişi
+        # gerçek bir konu sınırıdır → split olur. Sonraki geçişler aynı
+        # konunun farklı slaytlarıdır → split olmaz, içerikte kalır.
+        # Bu sayede iki ayrı slide_title grubu aynı chunk'ta birleşmez.
+        real_split_offsets = []
+        seen_slide_titles: set = set()
+        for m in candidates:
+            line = m.group(0).lstrip()
+            if not self._is_real_heading(line):
+                continue
+            heading_body = re.sub(r"^#+\s+", "", line).strip()
+            heading_norm = re.sub(r"[*_`]+", "", heading_body).strip().casefold()
+            if heading_norm in slide_titles:
+                if heading_norm in seen_slide_titles:
+                    continue  # 2., 3., ... geçiş — split etme, içerikte kalsın
+                seen_slide_titles.add(heading_norm)
+                # İlk geçiş → normal split akışına devam
+            real_split_offsets.append(m.start())
+
+        if not real_split_offsets:
+            return [text] if text.strip() else []
+
+        # Adım 2 — Offsetlerden parçaları çıkar
+        parts: list[str] = []
+        prev = 0
+        for off in real_split_offsets:
+            if off > prev:
+                chunk = text_with_lead[prev:off].strip()
+                if chunk:
+                    parts.append(chunk)
+            prev = off
+        last = text_with_lead[prev:].strip()
+        if last:
+            parts.append(last)
+
+        # Adım 3 — Slide_title kaydırma: parça sonunda asılı kalan tekrar
+        # eden başlıkları sonraki parçanın başına taşı. Böylece ana başlık
+        # ait olduğu içeriğin üstünde kalır.
+        parts = self._shift_trailing_slide_titles(parts, slide_titles)
+
+        # Adım 4 — Küçük parçaları komşusuyla birleştir
+        return self._merge_small_parts(parts, MIN_SEGMENT_LEN)
+
+    def _shift_trailing_slide_titles(
+        self, parts: list[str], slide_titles: set
+    ) -> list[str]:
+        """
+        Bir parçanın sonunda asılı kalan slide_title satırlarını sonraki
+        parçanın başına taşır.
+
+        Neden gerekli: slide_title (belgede 2+ kez tekrar eden başlık),
+        aslında SONRAKİ içeriğin ana başlığıdır. Örnek:
+
+            [parça i  ] ## Tablolar + içerik + ## Değişken Türleri
+            [parça i+1] ## NİCELİKSEL + içerik
+
+        Burada "Değişken Türleri" Slayt N'nin sonunda DEĞİL, Slayt N+1'in
+        BAŞINDA olması gereken ana başlık. Slide_title olduğu için split
+        noktası yapılmamış ama önceki parçanın kuyruğunda kalmış.
+
+        Bu metot sondaki slide_title'ları kopartıp sonraki parçaya yapıştırır.
+        Son parça için kaydırma yapılmaz (gönderecek bir sonraki parça yok).
+        """
+        if not slide_titles or len(parts) < 2:
+            return parts
+
+        for i in range(len(parts) - 1):
+            lines = parts[i].rstrip().split("\n")
+            to_shift: list[str] = []
+
+            # Sondan başa doğru: peş peşe slide_title satırlarını topla.
+            # Aralarda boş satır olabilir, onları da götürürüz.
+            while lines:
+                last_line = lines[-1].strip()
+                if not last_line:
+                    lines.pop()
+                    continue
+
+                m = re.match(r"^#{1,2}\s+(.+)$", last_line)
+                if not m:
+                    break  # heading olmayan içerik satırı geldi, dur
+
+                heading_body = m.group(1).strip()
+                heading_norm = re.sub(r"[*_`]+", "", heading_body).strip().casefold()
+                if heading_norm not in slide_titles:
+                    break  # slide_title değil (gerçek heading), dur
+
+                to_shift.insert(0, lines.pop())
+
+            if to_shift:
+                parts[i] = "\n".join(lines).rstrip()
+                parts[i + 1] = "\n".join(to_shift) + "\n\n" + parts[i + 1]
+
+        # Kaydırma sonucu boşalan parçaları temizle
+        return [p for p in parts if p.strip()]
+
+    def _merge_small_parts(self, parts: list[str], min_len: int) -> list[str]:
+        """
+        MIN altındaki parçaları ileri-öncelikli birleştirir.
+
+        İleri merge → küçük parça (genelde sadece heading) bir sonrakinin başına
+        yapışır. Heading'in altındaki içerikle bütünleşir.
+
+        Geri merge fallback → parça zaten son sıradaysa ve önceki varsa,
+        önceki parçanın sonuna eklenir.
+
+        Tek parça varsa (komşu yok) olduğu gibi kabul edilir; bu durumda parçanın
+        küçük olması parser'ın değil, asıl belgenin sorunudur.
+        """
+        if not parts:
+            return parts
+
+        out: list[str] = []
+        i = 0
+        while i < len(parts):
+            p = parts[i]
+            if len(p) < min_len:
+                # İleri merge dene
+                if i + 1 < len(parts):
+                    parts[i + 1] = p + "\n\n" + parts[i + 1]
+                    i += 1
+                    continue
+                # Geri merge dene
+                if out:
+                    out[-1] = out[-1] + "\n\n" + p
+                    i += 1
+                    continue
+                # Komşu yok, olduğu gibi al
+            out.append(p)
+            i += 1
+
+        return out
 
     def _chunking_with_vlm_awareness(self, enriched_text: str, file_path: str) -> list:
         """
@@ -293,6 +499,16 @@ class DocumentParser:
             Her node'a sıralı bir tam sayı atanır.
             Retriever bu indeksi kullanarak komşu node'ları getirebilir.
         """
+        # ── Aşama 0: Slayt başlıklarını topla ─────────────────────────────────
+        # Belgede 2+ kez tekrar eden ## başlıkları slayt başlığıdır;
+        # split noktası olarak sayılmazlar. Bir kez toplanır, sonra her
+        # text segment için _split_on_internal_headings'e parametre geçilir.
+        slide_titles = self._collect_slide_titles(enriched_text)
+        if slide_titles:
+            print(
+                f"[SİSTEM] Slayt başlığı tespit edildi: {len(slide_titles)} tekrar eden başlık"
+            )
+
         # ── Aşama 1: Tip etiketleme ───────────────────────────────────────────
         raw_segments = VLM_BLOCK_PATTERN.split(enriched_text)
         typed: list[dict] = []
@@ -301,6 +517,38 @@ class DocumentParser:
                 continue
             is_vlm = bool(VLM_BLOCK_PATTERN.match(seg.strip()))
             typed.append({"type": "vlm" if is_vlm else "text", "content": seg.strip()})
+
+        # ── Aşama 1.5: Fake heading temizliği ─────────────────────────────────
+        # pymupdf4llm font büyüklüğü yüzünden bazı CÜMLELERİ ## ile işaretler
+        # (örn. "## Bu tür grafikler her zaman artış gösterir."). _is_real_heading
+        # bunları zaten split noktası saymıyor ama markdown ## işareti chunk
+        # içinde kalıyor → embedding ekstra token olarak görür.
+        # Burada ## prefix'i silinip cümle sıradan paragrafa indirgenir.
+        # VLM bloklarına DOKUNULMAZ (içlerinde markdown table header olabilir).
+        for seg in typed:
+            if seg["type"] != "text":
+                continue
+            new_lines = []
+            for line in seg["content"].split("\n"):
+                if line.lstrip().startswith("#"):
+                    if not self._is_real_heading(line):
+                        line = re.sub(r"^\s*#{1,3}\s+", "", line)
+                new_lines.append(line)
+            seg["content"] = "\n".join(new_lines)
+
+        # ── Aşama 1.7: Fazla boşluk yutma ─────────────────────────────────────
+        # PDF'de bullet maddeler için kullanılan dekoratif görseller filtrelenince
+        # yerlerinde boş satır birikir (örn. başlık + 12 ardışık \n + içerik).
+        # 3+ ardışık satır sonunu tek paragraf molasına (\n\n) indir.
+        # _clean_markdown bunu metin ilk işlendiğinde yapıyor ama VLM enjeksiyonu
+        # ondan sonra çalışıp yeni boşluklar yaratıyor — burada tekrar süpürülür.
+        # VLM bloklarına DOKUNULMAZ (markdown table iç boşlukları korunmalı).
+        for seg in typed:
+            if seg["type"] != "text":
+                continue
+            seg["content"] = re.sub(
+                r"(?:\n[ \t\x0b\f\r\xa0]*){3,}", "\n\n", seg["content"]
+            )
 
         # ── Aşama 2: Küçük segment birleştirme ───────────────────────────────
         merged: list[dict] = []
@@ -352,7 +600,9 @@ class DocumentParser:
                 # Her parça SentenceSplitter'a ayrı ayrı girer.
                 # Bu sayede bir segment içindeki farklı konular ayrı node'lara düşer
                 # ve _create_section_parents onları section sınırı olarak tanıyabilir.
-                sub_segs = self._split_on_internal_headings(seg["content"])
+                sub_segs = self._split_on_internal_headings(
+                    seg["content"], slide_titles
+                )
 
                 for sub_seg in sub_segs:
                     # Bu parçanın başlığını güncelle — VLM prefix için gerekli
@@ -367,6 +617,19 @@ class DocumentParser:
                             .replace("*", "")
                             .strip()
                         )
+
+                    # YENİ: Pure-heading-only kontrolü.
+                    # Eğer sub_seg sadece ## başlık satırlarından oluşuyor ve
+                    # gerçek içerik (cümle, bullet, tablo) yoksa, node yapma.
+                    # last_heading güncellendi; sonraki VLM zaten bunu prefix
+                    # olarak alacak. "Başlık + 1-2 cümle" durumunda cümleler
+                    # içerik sayılır, node KALIR — kullanıcının nüansı korunur.
+                    non_heading_body = re.sub(
+                        r"^#{1,3}\s+.+$", "", sub_seg, flags=re.MULTILINE
+                    ).strip()
+                    if not non_heading_body:
+                        # Yalnızca başlık(lar) var. Bilgi last_heading'e taşındı.
+                        continue
 
                     doc = Document(
                         text=sub_seg, metadata={**base_metadata, "node_type": "text"}
@@ -556,6 +819,17 @@ class DocumentParser:
             else:
                 parent_text = core_text
 
+            # Section'ın baskın başlığını çek: core_text'in ilk ## satırı.
+            # Retriever debug çıktısı bunu okuyor; olmazsa 'sec=[?-?]' gibi
+            # anlamsız etiketler görünüyor.
+            section_heading = ""
+            for line in core_text.split("\n"):
+                line = line.strip()
+                hm = re.match(r"^#{1,2}\s+(.+)$", line)
+                if hm:
+                    section_heading = re.sub(r"[*_`]+", "", hm.group(1)).strip()
+                    break
+
             from llama_index.core.schema import TextNode as _TextNode
 
             parent_node = _TextNode(
@@ -565,6 +839,7 @@ class DocumentParser:
                     "file_name": sec_nodes[0].metadata.get("file_name", ""),
                     "node_type": "section",
                     "section_id": section_id,
+                    "section_heading": section_heading,
                     "node_index": start_idx,
                     "section_start_index": start_idx,
                     "section_end_index": end_idx,
