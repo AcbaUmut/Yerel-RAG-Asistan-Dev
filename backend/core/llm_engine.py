@@ -65,4 +65,11 @@ class LLMEngine:
         print("[SİSTEM] LLM bellekten tahliye ediliyor...")
         del self.llm
         del self.chain
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         print("[SİSTEM] LLM belleği temizlendi.")

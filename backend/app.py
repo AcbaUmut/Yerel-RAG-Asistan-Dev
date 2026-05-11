@@ -1,0 +1,259 @@
+import os
+
+from core.db_manager import DBManager
+from core.query_engine import QueryEngine
+
+
+class App:
+    """
+    Terminal tabanlı RAG asistanı.
+
+    Menü döngüsü ve kullanıcı etkileşimi. Tüm iş mantığı DBManager
+    üzerinden geçer; bu sınıf sadece UI katmanıdır.
+    """
+
+    def __init__(self):
+        self.db = DBManager()
+
+    # ── Ana döngü ────────────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        print("\n" + "=" * 60)
+        print("  YEREL RAG ASİSTANI")
+        print("=" * 60)
+
+        handlers = {
+            "1": self._handle_add_documents,
+            "2": self._handle_delete_document,
+            "3": self._handle_list_documents,
+            "4": self._handle_change_collection,
+            "5": self._handle_create_collection,
+            "6": self._handle_delete_collection,
+            "7": self._handle_query,
+        }
+
+        while True:
+            self._show_menu()
+            choice = input("Seçim: ").strip()
+
+            if choice == "0":
+                print("\nGörüşmek üzere.")
+                break
+
+            handler = handlers.get(choice)
+            if handler is None:
+                print("[HATA] Geçersiz seçim.")
+                continue
+
+            try:
+                handler()
+            except Exception as e:
+                # Beklenmedik hata menüyü çökertmesin
+                print(f"\n[HATA] İşlem sırasında beklenmedik bir sorun oluştu: {e}")
+                print("Menüye dönülüyor.")
+
+    def _show_menu(self) -> None:
+        print(f"\nAktif koleksiyon: {self.db.active_collection}")
+        print("-" * 40)
+        print("1) Doküman ekle (tek/çoklu PDF)")
+        print("2) Doküman sil")
+        print("3) Doküman listele")
+        print("4) Koleksiyon değiştir")
+        print("5) Yeni koleksiyon oluştur")
+        print("6) Koleksiyon sil")
+        print("7) Sorgu yap")
+        print("0) Çıkış")
+
+    # ── Handler'lar ──────────────────────────────────────────────────────────
+
+    def _handle_add_documents(self) -> None:
+        print("\n--- Doküman Ekle ---")
+        print("PDF yollarını boşlukla ayırarak yazın. Tek dosya için tek yol.")
+        raw = input("Yol(lar): ").strip()
+        if not raw:
+            print("[İPTAL]")
+            return
+
+        paths = self._split_paths(raw)
+        if not paths:
+            print("[İPTAL] Geçerli yol yok.")
+            return
+
+        # Mevcut olmayanları erken ayıkla, kullanıcıya bildir
+        valid, missing = [], []
+        for p in paths:
+            (valid if os.path.exists(p) else missing).append(p)
+
+        for m in missing:
+            print(f"[ATLA] Dosya bulunamadı: {m}")
+
+        if not valid:
+            print("[İPTAL] İşlenecek geçerli dosya kalmadı.")
+            return
+
+        # Çakışma kontrolü — her dosya için ayrı karar
+        # Sade tutmak için: koleksiyonda zaten varsa, hepsi için tek soru sor
+        existing = [
+            os.path.basename(p)
+            for p in valid
+            if self.db.document_exists(os.path.basename(p))
+        ]
+
+        on_conflict = "overwrite"  # default — çakışma yoksa fark etmez
+        if existing:
+            print(f"\nBu dosyalar koleksiyonda zaten var: {', '.join(existing)}")
+            if self._ask_yes_no("Üzerine yazılsın mı?"):
+                on_conflict = "overwrite"
+            else:
+                on_conflict = "skip"
+
+        # İşlemi başlat
+        result = self.db.add_documents(file_paths=valid, on_conflict=on_conflict)
+
+        # Özet
+        print("\n--- Özet ---")
+        print(f"Başarılı : {len(result['success'])}")
+        print(f"Başarısız: {len(result['failed'])}")
+        print(f"Atlanan  : {len(result['skipped'])}")
+        for f in result["failed"]:
+            print(f"  [HATA] {f['file_name']}: {f['reason']}")
+
+    def _handle_delete_document(self) -> None:
+        print("\n--- Doküman Sil ---")
+        docs = self.db.list_documents()
+        if not docs:
+            print("Aktif koleksiyonda doküman yok.")
+            return
+
+        selected = self._select_from_list(
+            [d["file_name"] for d in docs], "Silinecek dokümanı seç"
+        )
+        if selected is None:
+            return
+
+        if not self._ask_yes_no(f"'{selected}' silinecek. Emin misin?"):
+            print("[İPTAL]")
+            return
+
+        self.db.delete_document(selected)
+
+    def _handle_list_documents(self) -> None:
+        print(f"\n--- Dokümanlar (koleksiyon: {self.db.active_collection}) ---")
+        docs = self.db.list_documents()
+        if not docs:
+            print("Bu koleksiyonda doküman yok.")
+            return
+
+        for i, d in enumerate(docs, 1):
+            chunk = d.get("chunk_count", "?")
+            section = d.get("section_count", "?")
+            added = d.get("added_at", "?")
+            print(f"  {i}. {d['file_name']}")
+            print(f"     chunk: {chunk}  |  section: {section}  |  eklendi: {added}")
+
+    def _handle_change_collection(self) -> None:
+        print("\n--- Koleksiyon Değiştir ---")
+        collections = self.db.list_collections()
+        selected = self._select_from_list(collections, "Aktif yapılacak koleksiyon")
+        if selected is None:
+            return
+        self.db.set_active_collection(selected)
+
+    def _handle_create_collection(self) -> None:
+        print("\n--- Yeni Koleksiyon ---")
+        name = input("Koleksiyon adı: ").strip()
+        if not name:
+            print("[İPTAL]")
+            return
+        self.db.create_collection(name)
+
+    def _handle_delete_collection(self) -> None:
+        print("\n--- Koleksiyon Sil ---")
+        # Default'u zaten DBManager engelliyor, listede gösterelim ama uyaralım
+        collections = [
+            c for c in self.db.list_collections() if c != self.db.DEFAULT_COLLECTION
+        ]
+        if not collections:
+            print("Silinebilir koleksiyon yok. (default silinemez)")
+            return
+
+        selected = self._select_from_list(collections, "Silinecek koleksiyon")
+        if selected is None:
+            return
+
+        if not self._ask_yes_no(
+            f"'{selected}' koleksiyonu ve içindeki tüm dokümanlar silinecek. Emin misin?"
+        ):
+            print("[İPTAL]")
+            return
+
+        self.db.delete_collection(selected)
+
+    def _handle_query(self) -> None:
+        print("\n--- Sorgu ---")
+        docs = self.db.list_documents()
+        if not docs:
+            print("Aktif koleksiyonda doküman yok. Önce doküman ekle.")
+            return
+
+        selected = self._select_from_list(
+            [d["file_name"] for d in docs], "Sorgu yapılacak doküman"
+        )
+        if selected is None:
+            return
+
+        question = input("Soru: ").strip()
+        if not question:
+            print("[İPTAL]")
+            return
+
+        engine = QueryEngine(collection_name=self.db.active_collection)
+        engine.run(question=question, file_name=selected)
+
+    # ── Yardımcılar ──────────────────────────────────────────────────────────
+
+    def _ask_yes_no(self, prompt: str) -> bool:
+        ans = input(f"{prompt} [e/h]: ").strip().lower()
+        return ans in ("e", "evet", "y", "yes")
+
+    def _select_from_list(self, items: list, prompt: str):
+        """Numaralı liste göster, kullanıcı bir seçer. İptal için boş enter."""
+        if not items:
+            print("Liste boş.")
+            return None
+
+        print(f"\n{prompt}:")
+        for i, item in enumerate(items, 1):
+            print(f"  {i}) {item}")
+
+        raw = input("Numara (boş = iptal): ").strip()
+        if not raw:
+            return None
+
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+            print("[HATA] Geçersiz numara.")
+            return None
+        except ValueError:
+            print("[HATA] Sayı girilmedi.")
+            return None
+
+    def _split_paths(self, raw: str) -> list[str]:
+        """
+        Yol stringini parse eder. Tırnaklı yollarda boşluk korunsun
+        (örn. 'C:\\My Docs\\a.pdf' "B:\\b.pdf").
+        Sade tutmak için shlex kullanıyoruz.
+        """
+        import shlex
+
+        try:
+            return shlex.split(raw)
+        except ValueError:
+            # Eşleşmeyen tırnak vs. — naif fallback
+            return raw.split()
+
+
+if __name__ == "__main__":
+    App().run()

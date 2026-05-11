@@ -172,42 +172,6 @@ class VectorStoreEngine:
             vector_store=self.vector_store
         )
 
-    def unload(self) -> None:
-        """Embedding modelini bellekten tahliye eder."""
-        if getattr(self, "embed_model", None) is not None:
-            self.embed_model.unload()
-            self.embed_model = None
-        Settings.embed_model = None
-        gc.collect()
-
-    def add_nodes(self, nodes, file_name: str):
-        if not nodes:
-            print("Uyarı: Eklenecek node bulunamadı.")
-            return None
-
-        child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
-        parent_nodes = [n for n in nodes if n.metadata.get("node_type") == "section"]
-
-        # Child'ları temizle ve ekle (değişmedi)
-        try:
-            self.chroma_collection.delete(where={"file_name": file_name})
-        except Exception as e:
-            print(f"[UYARI] Temizleme sırasında hata: {e}")
-
-        print(f"  {len(child_nodes)} child node embedding'leniyor...")
-        VectorStoreIndex(nodes=child_nodes, storage_context=self.storage_context)
-
-        # Parent'ları JSON'a kaydet — embedding hesabı yok, salt metin deposu
-        if parent_nodes:
-            print(f"  {len(parent_nodes)} section parent JSON'a kaydediliyor...")
-            self._save_sections(parent_nodes, file_name)
-
-        print(
-            f"[SİSTEM] Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}'"
-            f" | {len(parent_nodes)} section → sections.json"
-        )
-        return None
-
     def _save_sections(self, parent_nodes: list, file_name: str) -> None:
         """
         Section parent node'larını JSON dosyasına kaydeder.
@@ -231,13 +195,6 @@ class VectorStoreEngine:
             with open(sections_file, "r", encoding="utf-8") as f:
                 existing = json.load(f)
 
-        # Bu dosyaya ait eski section'ları sil (yeniden ingest durumu)
-        existing = {
-            sid: data
-            for sid, data in existing.items()
-            if data.get("metadata", {}).get("file_name") != file_name
-        }
-
         # Yeni section'ları ekle
         for node in parent_nodes:
             existing[node.node_id] = {
@@ -247,6 +204,65 @@ class VectorStoreEngine:
 
         with open(sections_file, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False, indent=2)
+
+    def add_nodes(self, nodes, file_name: str) -> tuple[int, int]:
+        """
+        Dönüş: (child_count, section_count)
+        """
+        if not nodes:
+            print("Uyarı: Eklenecek node bulunamadı.")
+            return 0, 0
+
+        child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
+        parent_nodes = [n for n in nodes if n.metadata.get("node_type") == "section"]
+
+        print(f"  {len(child_nodes)} child node embedding'leniyor...")
+        VectorStoreIndex(nodes=child_nodes, storage_context=self.storage_context)
+
+        # Parent'ları JSON'a kaydet — embedding hesabı yok, salt metin deposu
+        if parent_nodes:
+            print(f"  {len(parent_nodes)} section parent JSON'a kaydediliyor...")
+            self._save_sections(parent_nodes, file_name)
+
+        print(
+            f"[SİSTEM] Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}'"
+            f" | {len(parent_nodes)} section → sections.json"
+        )
+        return len(child_nodes), len(parent_nodes)
+
+    def unload(self):
+        """
+        Jina embedding modelini VRAM'den serbest bırakır.
+
+        Settings.embed_model global state olduğu için onu da temizliyoruz,
+        yoksa lokal referanslar silinse bile model bellekte kalır.
+        """
+        print("[SİSTEM] Embedding modeli bellekten tahliye ediliyor...")
+        try:
+            Settings.embed_model = None
+        except Exception:
+            pass
+
+        # JinaEmbeddings içindeki ağır objeleri açık şekilde sil
+        if hasattr(self, "vector_store"):
+            del self.vector_store
+        if hasattr(self, "storage_context"):
+            del self.storage_context
+        if hasattr(self, "chroma_collection"):
+            del self.chroma_collection
+        if hasattr(self, "db_client"):
+            del self.db_client
+
+        # PyTorch'un CUDA pool'unu zorla boşalt
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        print("[SİSTEM] Embedding belleği temizlendi.")
 
 
 if __name__ == "__main__":

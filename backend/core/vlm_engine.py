@@ -164,4 +164,11 @@ class VLMEngine:
         print("[SİSTEM] VLM Motoru VRAM'den tahliye ediliyor...")
         del self.llm
         del self.chat_handler
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         print("[SİSTEM] VLM belleği temizlendi.")

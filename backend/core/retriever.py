@@ -11,8 +11,12 @@ from llama_cpp.llama_embedding import LlamaEmbedding
 
 
 class RetrieverEngine:
-    def __init__(self, collection_name: str = "tez_koleksiyonu"):
-        self.persist_dir = "./backend/chroma_db"
+    def __init__(
+        self,
+        collection_name: str = "default",
+        persist_dir: str = "./backend/data/database",
+    ):
+        self.persist_dir = persist_dir
         self.collection_name = collection_name
 
         print("[SİSTEM] Retriever modelleri belleğe alınıyor...")
@@ -196,7 +200,13 @@ class RetrieverEngine:
     # Ana Bağlam Getirici
     # ──────────────────────────────────────────────────────────────────────────
 
-    def get_relevant_context(self, query: str, top_n: int = 3, threshold: float = 0.0):
+    def get_relevant_context(
+        self,
+        query: str,
+        top_n: int = 3,
+        threshold: float = 0.0,
+        file_name: str | None = None,
+    ):
         """
         Sorguya en uygun bağlamı döndürür.
 
@@ -208,7 +218,19 @@ class RetrieverEngine:
             5. Birleşik parent metinleri döndür
         """
         # ── 1. Ham getirme ─────────────────────────────────────
-        raw_docs = self.base_retriever.invoke(query)
+        # Doküman filtresi varsa retriever'ı tek seferlik filter'lı kur.
+        # Constructor'daki base_retriever sade kalır, oturum içinde
+        # farklı dokümanlara sorgu atılabilir.
+        if file_name:
+            filtered_retriever = self.vectorstore.as_retriever(
+                search_kwargs={
+                    "k": 10,
+                    "filter": {"file_name": file_name},
+                }
+            )
+            raw_docs = filtered_retriever.invoke(query)
+        else:
+            raw_docs = self.base_retriever.invoke(query)
         if not raw_docs:
             print("[RETRIEVER] Hiç sonuç bulunamadı.")
             return ""
@@ -287,4 +309,15 @@ class RetrieverEngine:
     def unload(self):
         print("[SİSTEM] Reranker bellekten tahliye ediliyor...")
         del self.reranker
+        if hasattr(self, "vectorstore"):
+            del self.vectorstore
+        if hasattr(self, "base_retriever"):
+            del self.base_retriever
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         print("[SİSTEM] Bellek temizlendi.")
