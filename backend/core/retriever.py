@@ -307,17 +307,21 @@ class RetrieverEngine:
         return "\n\n---\n\n".join(parts)
 
     def unload(self):
+        """
+        Reranker + vectorstore referanslarını temizler.
+
+        Reranker LlamaEmbedding (llama-cpp-python, C++); vectorstore
+        langchain_chroma + ONNX Jina. Hiçbiri PyTorch GPU kullanmıyor,
+        torch.cuda.empty_cache() yararsız.
+        """
+        import gc
+
         print("[SİSTEM] Reranker bellekten tahliye ediliyor...")
-        del self.reranker
-        if hasattr(self, "vectorstore"):
-            del self.vectorstore
         if hasattr(self, "base_retriever"):
             del self.base_retriever
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        if hasattr(self, "vectorstore"):
+            del self.vectorstore
+        if hasattr(self, "reranker"):
+            del self.reranker
+        gc.collect()
         print("[SİSTEM] Bellek temizlendi.")

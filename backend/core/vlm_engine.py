@@ -161,14 +161,21 @@ class VLMEngine:
             return ""
 
     def unload(self) -> None:
-        print("[SİSTEM] VLM Motoru VRAM'den tahliye ediliyor...")
-        del self.llm
-        del self.chat_handler
-        try:
-            import torch
+        """
+        VLM'i VRAM'den serbest bırakır.
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        llama-cpp-python C++ tabanlı, PyTorch kullanmıyor. del → Python
+        refcount düşer → C destructor llama_free() ve clip_free() çağırır →
+        GGML kendi CUDA buffer'larını boşaltır. torch.cuda.empty_cache()
+        burada işe yaramaz; PyTorch'un memory pool'u zaten boş.
+        """
+        import gc
+
+        print("[SİSTEM] VLM Motoru VRAM'den tahliye ediliyor...")
+        # Sıra önemli: önce Llama (chat_handler'a referansı var), sonra handler
+        if hasattr(self, "llm"):
+            del self.llm
+        if hasattr(self, "chat_handler"):
+            del self.chat_handler
+        gc.collect()
         print("[SİSTEM] VLM belleği temizlendi.")

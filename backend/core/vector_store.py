@@ -238,12 +238,22 @@ class VectorStoreEngine:
         yoksa lokal referanslar silinse bile model bellekte kalır.
         """
         print("[SİSTEM] Embedding modeli bellekten tahliye ediliyor...")
+        # 1. Önce Jina'nın kendi unload'unu çağır — ORT session ve tokenizer
+        # açıkça None'lanıyor, destructor garantili çalışıyor.
+        try:
+            jina = Settings.embed_model
+            if jina is not None and hasattr(jina, "unload"):
+                jina.unload()
+        except Exception as e:
+            print(f"[UYARI] Jina unload sırasında: {e}")
+
+        # 2. LlamaIndex global state'i temizle
         try:
             Settings.embed_model = None
         except Exception:
             pass
 
-        # JinaEmbeddings içindeki ağır objeleri açık şekilde sil
+        # 3. Diğer ağır referansları sil
         if hasattr(self, "vector_store"):
             del self.vector_store
         if hasattr(self, "storage_context"):
@@ -253,14 +263,12 @@ class VectorStoreEngine:
         if hasattr(self, "db_client"):
             del self.db_client
 
-        # PyTorch'un CUDA pool'unu zorla boşalt
-        try:
-            import torch
+        # Not: torch.cuda.empty_cache() çağrılmıyor — ChromaDB ve Jina ONNX
+        # PyTorch GPU kullanmıyor. Jina'nın kendi unload'u zaten ORT
+        # session'ı temizliyor.
+        import gc
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        gc.collect()
 
         print("[SİSTEM] Embedding belleği temizlendi.")
 

@@ -118,6 +118,7 @@ class DBManager:
             self.active_collection = self.DEFAULT_COLLECTION
             print(f"[SİSTEM] Aktif koleksiyon '{self.DEFAULT_COLLECTION}'a alındı.")
 
+        self._vacuum_db()
         print(f"[SİSTEM] Koleksiyon silindi: '{name}'")
         return True
 
@@ -280,6 +281,7 @@ class DBManager:
         del catalog["collections"][collection]["documents"][file_name]
         self._save_catalog(catalog)
 
+        self._vacuum_db()
         print(f"[SİSTEM] Doküman silindi: '{file_name}' (koleksiyon: {collection})")
         return True
 
@@ -309,3 +311,23 @@ class DBManager:
 
         with open(self.sections_path, "w", encoding="utf-8") as f:
             json.dump(filtered, f, ensure_ascii=False, indent=2)
+
+        def _vacuum_db(self) -> None:
+            """
+            SQLite freelist'i temizler, dosyayı kompakt yapar.
+
+            ChromaDB silme yapsa bile SQLite sayfaları "freelist"e atıyor,
+            dosya boyutunu küçültmüyor. VACUUM bunu çözer. Hızlı operasyon
+            (küçük dosyalarda ~100ms), her silme sonrası çağırmak güvenli.
+            """
+            import sqlite3
+
+            sqlite_path = os.path.join(self.persist_dir, "chroma.sqlite3")
+            if not os.path.exists(sqlite_path):
+                return
+            try:
+                conn = sqlite3.connect(sqlite_path)
+                conn.execute("VACUUM")
+                conn.close()
+            except Exception as e:
+                print(f"[UYARI] VACUUM sırasında: {e}")

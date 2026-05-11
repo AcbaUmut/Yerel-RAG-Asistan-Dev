@@ -62,14 +62,18 @@ class LLMEngine:
             return f"LLM Yanıt Üretirken Hata Oluştu: {str(e)}"
 
     def unload(self):
-        print("[SİSTEM] LLM bellekten tahliye ediliyor...")
-        del self.llm
-        del self.chain
-        try:
-            import torch
+        """
+        LLM'i VRAM'den serbest bırakır.
 
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        LangChain LlamaCpp arkada llama-cpp-python kullanıyor — C++ tabanlı,
+        PyTorch değil. del + gc.collect() yeterli.
+        """
+        import gc
+
+        print("[SİSTEM] LLM bellekten tahliye ediliyor...")
+        if hasattr(self, "chain"):
+            del self.chain
+        if hasattr(self, "llm"):
+            del self.llm
+        gc.collect()
         print("[SİSTEM] LLM belleği temizlendi.")
