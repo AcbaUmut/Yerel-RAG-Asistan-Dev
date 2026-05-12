@@ -22,7 +22,7 @@ class DBManager:
     CATALOG_FILE = "documents.json"
     # ChromaDB kuralı: 3-512 karakter, alfanumerik + . _ -, başı/sonu alfanumerik
     COLLECTION_NAME_PATTERN = re.compile(
-        r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]$"
+        r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,48}[a-zA-Z0-9]$"
     )
 
     def __init__(self, persist_dir: str = "./backend/data/database"):
@@ -40,6 +40,9 @@ class DBManager:
             initial = {"collections": {self.DEFAULT_COLLECTION: {"documents": {}}}}
             self._save_catalog(initial)
             print(f"[SİSTEM] Yeni catalog oluşturuldu: {self.catalog_path}")
+
+        # Önceki oturumdan kalan orphan segment klasörlerini temizle
+        self._cleanup_orphan_segments()
 
     # ── Catalog dosyası okuma/yazma ──────────────────────────────────────────
 
@@ -73,7 +76,7 @@ class DBManager:
         if not self.COLLECTION_NAME_PATTERN.match(name):
             print(
                 "[HATA] Geçersiz koleksiyon adı. Kurallar:\n"
-                "  - 3 ila 512 karakter\n"
+                "  - 3 ila 50 karakter\n"
                 "  - Sadece harf, rakam, . _ -\n"
                 "  - Başı ve sonu harf veya rakam olmalı"
             )
@@ -109,6 +112,9 @@ class DBManager:
         except Exception as e:
             print(f"[UYARI] ChromaDB tarafında silme hatası: {e}")
 
+        # SQLite kaydı silindi, mmap'leri serbest bırakmak için client'ı yenile
+        self._reset_chroma_client()
+
         self._delete_sections_by_collection(name)
 
         del catalog["collections"][name]
@@ -120,6 +126,7 @@ class DBManager:
 
         self._vacuum_db()
         print(f"[SİSTEM] Koleksiyon silindi: '{name}'")
+        print("[BİLGİ] Segment klasörleri programı yeniden başlattığında temizlenecek.")
         return True
 
     def set_active_collection(self, name: str) -> bool:
@@ -252,38 +259,52 @@ class DBManager:
             return False
         return file_name in catalog["collections"][collection]["documents"]
 
-    def delete_document(self, file_name: str, collection: str | None = None) -> bool:
+    def delete_documents(
+        self, file_names: list[str], collection: str | None = None
+    ) -> dict:
         """
-        Dokümanı siler: ChromaDB + sections.json + catalog.
+        Birden fazla dokümanı toplu siler. VACUUM ve segment temizliği
+        en sonda bir kez çalışır.
+
+        Dönüş: {"deleted": [...], "failed": [...]}
         """
         collection = collection or self.active_collection
-        catalog = self._load_catalog()
+        deleted: list[str] = []
+        failed: list[dict] = []
 
+        catalog = self._load_catalog()
         if collection not in catalog["collections"]:
             print(f"[HATA] '{collection}' adında koleksiyon yok.")
-            return False
+            return {"deleted": [], "failed": []}
 
-        if file_name not in catalog["collections"][collection]["documents"]:
-            print(f"[HATA] '{file_name}' bu koleksiyonda yok.")
-            return False
+        for file_name in file_names:
+            if file_name not in catalog["collections"][collection]["documents"]:
+                failed.append({"file_name": file_name, "reason": "Koleksiyonda yok"})
+                continue
 
-        # ── ChromaDB'den sil ──
-        try:
-            chroma_col = self.chroma_client.get_or_create_collection(collection)
-            chroma_col.delete(where={"file_name": file_name})
-        except Exception as e:
-            print(f"[UYARI] ChromaDB tarafında silme hatası: {e}")
+            # ChromaDB
+            try:
+                chroma_col = self.chroma_client.get_or_create_collection(collection)
+                chroma_col.delete(where={"file_name": file_name})
+            except Exception as e:
+                failed.append({"file_name": file_name, "reason": f"ChromaDB: {e}"})
+                continue
 
-        # ── sections.json'dan sil ──
-        self._delete_sections_by_document(file_name, collection)
+            # sections.json
+            self._delete_sections_by_document(file_name, collection)
 
-        # ── Catalog'dan sil ──
-        del catalog["collections"][collection]["documents"][file_name]
+            # catalog
+            del catalog["collections"][collection]["documents"][file_name]
+            deleted.append(file_name)
+
         self._save_catalog(catalog)
 
-        self._vacuum_db()
-        print(f"[SİSTEM] Doküman silindi: '{file_name}' (koleksiyon: {collection})")
-        return True
+        # Toplu temizlik
+        if deleted:
+            self._vacuum_db()
+            print(f"[SİSTEM] {len(deleted)} doküman silindi.")
+
+        return {"deleted": deleted, "failed": failed}
 
     # ── Yardımcılar ──────────────────────────────────────────────────────────
 
@@ -312,22 +333,86 @@ class DBManager:
         with open(self.sections_path, "w", encoding="utf-8") as f:
             json.dump(filtered, f, ensure_ascii=False, indent=2)
 
-        def _vacuum_db(self) -> None:
-            """
-            SQLite freelist'i temizler, dosyayı kompakt yapar.
+    def _vacuum_db(self) -> None:
+        """
+        SQLite freelist'i temizler, dosyayı kompakt yapar.
 
-            ChromaDB silme yapsa bile SQLite sayfaları "freelist"e atıyor,
-            dosya boyutunu küçültmüyor. VACUUM bunu çözer. Hızlı operasyon
-            (küçük dosyalarda ~100ms), her silme sonrası çağırmak güvenli.
-            """
-            import sqlite3
+        ChromaDB silme yapsa bile SQLite sayfaları "freelist"e atıyor,
+        dosya boyutunu küçültmüyor. VACUUM bunu çözer. Hızlı operasyon
+        (küçük dosyalarda ~100ms), her silme sonrası çağırmak güvenli.
+        """
+        import sqlite3
 
-            sqlite_path = os.path.join(self.persist_dir, "chroma.sqlite3")
-            if not os.path.exists(sqlite_path):
-                return
+        sqlite_path = os.path.join(self.persist_dir, "chroma.sqlite3")
+        if not os.path.exists(sqlite_path):
+            return
+        try:
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute("VACUUM")
+            conn.close()
+        except Exception as e:
+            print(f"[UYARI] VACUUM sırasında: {e}")
+
+    def _cleanup_orphan_segments(self) -> None:
+        """
+        ChromaDB'nin SQLite'taki aktif segment ID'lerini alır, persist_dir
+        içindeki UUID'li klasörleri tarar, listede olmayanları siler.
+
+        ChromaDB delete_collection() segment klasörlerini diskten silmiyor —
+        bu method onu telafi eder. Silme operasyonlarından sonra çağrılır.
+        """
+        import shutil
+        import sqlite3
+
+        sqlite_path = os.path.join(self.persist_dir, "chroma.sqlite3")
+        if not os.path.exists(sqlite_path):
+            return
+
+        # Aktif segment ID'lerini SQLite'tan oku
+        try:
+            conn = sqlite3.connect(sqlite_path)
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM segments")
+            active_ids = {row[0] for row in cur.fetchall()}
+            conn.close()
+        except Exception as e:
+            print(f"[UYARI] Segment ID'leri okunamadı: {e}")
+            return
+
+        # persist_dir altındaki UUID klasörlerini tara
+        uuid_pattern = re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            re.IGNORECASE,
+        )
+        removed = 0
+        for entry in os.listdir(self.persist_dir):
+            full_path = os.path.join(self.persist_dir, entry)
+            if not os.path.isdir(full_path):
+                continue
+            if not uuid_pattern.match(entry):
+                continue
+            if entry in active_ids:
+                continue
+            # Orphan — sil
             try:
-                conn = sqlite3.connect(sqlite_path)
-                conn.execute("VACUUM")
-                conn.close()
+                shutil.rmtree(full_path)
+                removed += 1
             except Exception as e:
-                print(f"[UYARI] VACUUM sırasında: {e}")
+                print(f"[UYARI] Orphan segment silinemedi ({entry}): {e}")
+
+        if removed:
+            print(f"[SİSTEM] {removed} orphan segment klasörü temizlendi.")
+
+    def _reset_chroma_client(self) -> None:
+        """
+        ChromaDB client'ını yıkıp yeniden oluşturur.
+
+        Windows'ta segment dosyaları mmap ile açık tutuluyor; client
+        canlıyken silinmiş koleksiyonların dosyaları kilitli kalıyor.
+        Reset, bütün mmap'leri serbest bırakır.
+        """
+        import gc
+
+        del self.chroma_client
+        gc.collect()
+        self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)

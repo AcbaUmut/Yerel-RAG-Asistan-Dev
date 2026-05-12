@@ -125,17 +125,23 @@ class App:
             print("Aktif koleksiyonda doküman yok.")
             return
 
-        selected = self._select_from_list(
-            [d["file_name"] for d in docs], "Silinecek dokümanı seç"
+        selected = self._select_multiple_from_list(
+            [d["file_name"] for d in docs], "Silinecek dokümanları seç"
         )
-        if selected is None:
-            return
-
-        if not self._ask_yes_no(f"'{selected}' silinecek. Emin misin?"):
+        if not selected:
             print("[İPTAL]")
             return
 
-        self.db.delete_document(selected)
+        print(f"\nSilinecek: {', '.join(selected)}")
+        if not self._ask_yes_no("Onaylıyor musun?"):
+            print("[İPTAL]")
+            return
+
+        result = self.db.delete_documents(selected)
+        if result["failed"]:
+            print(f"\n{len(result['failed'])} doküman silinemedi:")
+            for f in result["failed"]:
+                print(f"  - {f['file_name']}: {f['reason']}")
 
     def _handle_list_documents(self) -> None:
         print(f"\n--- Dokümanlar (koleksiyon: {self.db.active_collection}) ---")
@@ -239,6 +245,47 @@ class App:
         except ValueError:
             print("[HATA] Sayı girilmedi.")
             return None
+
+    def _select_multiple_from_list(self, items: list, prompt: str) -> list:
+        """
+        Numaralı liste göster, kullanıcı virgülle ayırarak birden fazla seçer.
+        Örnek: "1,3,5" veya "1, 3, 5". Boş enter = iptal.
+        """
+        if not items:
+            print("Liste boş.")
+            return []
+
+        print(f"\n{prompt}:")
+        for i, item in enumerate(items, 1):
+            print(f"  {i}) {item}")
+        print("  (Virgülle ayır: '1,3,5' — boş = iptal)")
+
+        raw = input("Numaralar: ").strip()
+        if not raw:
+            return []
+
+        selected = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(items):
+                    selected.append(items[idx])
+                else:
+                    print(f"[HATA] Geçersiz numara: {part}")
+            except ValueError:
+                print(f"[HATA] Sayı değil: {part}")
+
+        # Tekrarları kaldır, sırayı koru
+        seen = set()
+        unique = []
+        for s in selected:
+            if s not in seen:
+                seen.add(s)
+                unique.append(s)
+        return unique
 
     def _split_paths(self, raw: str) -> list[str]:
         """
