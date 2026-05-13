@@ -1,0 +1,63 @@
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+
+
+def setup_logging(
+    log_dir: str = "./backend/data/logs",
+    console_level: int = logging.INFO,
+    file_level: int = logging.DEBUG,
+) -> None:
+    """
+    Uygulama genelinde logging'i kurar. Bir kez, en başta çağrılır.
+
+    İki handler bağlar:
+        - Konsol  → INFO ve üstü (kullanıcı için sade)
+        - Dosya   → DEBUG ve üstü (debug için zengin), rotating
+
+    Modüller `log = logging.getLogger(__name__)` ile logger alır, bu setup
+    onları otomatik miras yoluyla yakalar.
+
+    Çağrı tekrar edilirse handler'lar duplicate olmasın diye önce
+    mevcut handler'lar temizlenir.
+    """
+    os.makedirs(log_dir, exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(
+        logging.DEBUG
+    )  # ana logger her şeyi geçirir, filtreyi handler'lar yapar
+
+    # Mevcut handler'ları temizle (idempotent çağrı)
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    # ── Konsol handler — sade format ─────────────────────────────────────────
+    console_fmt = logging.Formatter("[%(levelname)s] %(message)s")
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(console_fmt)
+    root.addHandler(console_handler)
+
+    # ── Dosya handler — zengin format, rotating ──────────────────────────────
+    file_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = RotatingFileHandler(
+        filename=os.path.join(log_dir, "app.log"),
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=5,  # eski log dosyalarını sakla: app.log.1, .2, ...
+        encoding="utf-8",
+    )
+    file_handler.setLevel(file_level)
+    file_handler.setFormatter(file_fmt)
+    root.addHandler(file_handler)
+
+    # Bazı kütüphaneler çok gürültücü — sustur (INFO altını dosyaya almasınlar)
+    logging.getLogger("chromadb").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("langchain").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # PIL her PNG'de IHDR/pHYs/IDAT chunk debug'ı basıyor — ingestion'da 50+ satır gürültü
+    logging.getLogger("PIL").setLevel(logging.WARNING)

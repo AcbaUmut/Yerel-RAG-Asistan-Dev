@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import time
@@ -11,6 +12,8 @@ from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode  # ← YENİ
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 # ── Sabitler ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +55,10 @@ class DocumentParser:
         chunk_overlap: int = 200,
         hf_threshold: float = 0.6,
     ):
-        print("[SİSTEM] DocumentParser başlatılıyor...")
+        # DEBUG: Parser her ingestion için bir kez oluşur; ingestion_engine
+        # zaten üst seviyede "Faz 1" + "Parse ediliyor" mesajlarını basıyor,
+        # bu satırı INFO yapmak terminalde tekrar etkisi yaratır.
+        log.debug("DocumentParser başlatılıyor.")
         self.chunk_size = (
             AppConfig.CHUNK_SIZE if AppConfig.CHUNK_SIZE is not None else chunk_size
         )
@@ -80,6 +86,11 @@ class DocumentParser:
         """
         total_pages = len(pages)
         if total_pages <= 2:
+            # Tekrar tespiti için en az 3 sayfa gerekli. Kısa belgelerde atla.
+            log.debug(
+                f"Header/footer tespiti atlandı: {total_pages} sayfa "
+                "(en az 3 sayfa gerekli)."
+            )
             return "\n\n".join([p["text"] for p in pages])
 
         candidate_lines = []
@@ -98,8 +109,14 @@ class DocumentParser:
                 stop_lines.add(line)
 
         if stop_lines:
-            print(
-                f"[SİSTEM] Otonom Temizleyici şu tekrar eden satırları sildi: {stop_lines}"
+            log.debug(
+                f"Tekrar eden header/footer tespit edildi: {len(stop_lines)} satır "
+                f"(eşik={self.hf_threshold:.2f}, sayfa={total_pages}). Silinenler: {stop_lines}"
+            )
+        else:
+            log.debug(
+                f"Tekrar eden header/footer bulunamadı "
+                f"(eşik={self.hf_threshold:.2f}, sayfa={total_pages})."
             )
 
         cleaned_pages = []
@@ -172,6 +189,12 @@ class DocumentParser:
             return False
 
         except Exception:
+            # Bozuk veya açılamayan görsel. Davranış değişmiyor (True dönüyor
+            # ve metinden silinecek), ama olay sessiz kalmasın — debug'a yaz.
+            log.debug(
+                f"Görsel okunamadı, dekoratif sayıldı: {image_path}",
+                exc_info=True,
+            )
             return True
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -187,14 +210,16 @@ class DocumentParser:
                orijinal konumuna yerleştirilir.
         """
         if vlm_engine is None:
-            print("[UYARI] VLM Motoru sağlanmadı. Görseller metne dahil edilmeyecek.")
+            # ingestion_engine zaten VLM yüklenemediğinde WARNING basıyor;
+            # burada tekrar WARNING çift loglama olur. INFO ile yetin.
+            log.info("VLM motoru yok, görseller metne dahil edilmeyecek.")
             return text
 
         pattern = r"!\[.*?\]\((.*?)\)"
         matches = list(re.finditer(pattern, text))
 
         if not matches:
-            print("[SİSTEM] Dokümanda analiz edilecek görsel bulunamadı.")
+            log.info("Dokümanda analiz edilecek görsel bulunamadı.")
             return text
 
         decorative_paths = {
@@ -202,8 +227,8 @@ class DocumentParser:
         }
         meaningful_count = len(matches) - len(decorative_paths)
 
-        print(
-            f"[SİSTEM] {len(matches)} görsel bulundu → "
+        log.info(
+            f"{len(matches)} görsel bulundu → "
             f"{len(decorative_paths)} dekoratif filtrelendi → "
             f"{meaningful_count} görsel VLM'e gönderilecek."
         )
@@ -211,8 +236,15 @@ class DocumentParser:
         if meaningful_count == 0:
             for match in matches:
                 text = text.replace(match.group(0), "")
-            print("[SİSTEM] Tüm görseller dekoratif, VLM çalıştırılmadı.")
+            log.info("Tüm görseller dekoratif, VLM çalıştırılmadı.")
             return text
+
+        # VLM çağrılan ama boş içerik dönen görselleri say. İçerik kaybı
+        # ingestion başarılı görünse bile oluşabilir — sonda WARNING ile özetle.
+        # Dekoratif olduğu için zaten atlananlar bu sayaca DAHİL DEĞİL,
+        # onlar yukarıdaki info mesajında ayrı raporlandı.
+        failed_count = 0
+        vlm_called = 0
 
         start_time = time.time()
         for match in matches:
@@ -223,6 +255,7 @@ class DocumentParser:
                 text = text.replace(original_tag, "")
                 continue
 
+            vlm_called += 1
             vlm_result = vlm_engine.extract_text(image_path)
 
             if vlm_result:
@@ -230,10 +263,19 @@ class DocumentParser:
                 replacement = f"\n<VLM_START id='{img_id}'>\n{vlm_result}\n<VLM_END>\n"
                 text = text.replace(original_tag, replacement)
             else:
+                # Tag silinmeye devam, ama olayı say.
                 text = text.replace(original_tag, "")
+                failed_count += 1
 
-        print(f"      [Toplam VLM İşlemi: {time.time() - start_time:.2f} sn]\n")
-        print("[SİSTEM] VLM Enjeksiyonu başarıyla tamamlandı.")
+        log.debug(f"Toplam VLM işlem süresi: {time.time() - start_time:.2f} sn")
+
+        if failed_count > 0:
+            log.warning(
+                f"VLM {vlm_called} görsel için çağrıldı, "
+                f"{failed_count} tanesi boş içerik döndürdü — içerik kaybı oluştu."
+            )
+
+        log.info("VLM enjeksiyonu tamamlandı.")
         return text
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -505,8 +547,8 @@ class DocumentParser:
         # text segment için _split_on_internal_headings'e parametre geçilir.
         slide_titles = self._collect_slide_titles(enriched_text)
         if slide_titles:
-            print(
-                f"[SİSTEM] Slayt başlığı tespit edildi: {len(slide_titles)} tekrar eden başlık"
+            log.debug(
+                f"Slayt başlığı tespit edildi: {len(slide_titles)} tekrar eden başlık."
             )
 
         # ── Aşama 1: Tip etiketleme ───────────────────────────────────────────
@@ -641,9 +683,9 @@ class DocumentParser:
 
         vlm_count = sum(1 for n in nodes if n.metadata.get("node_type") == "vlm")
         text_count = len(nodes) - vlm_count
-        print(
-            f"[SİSTEM] Hibrit chunker tamamlandı: "
-            f"{text_count} metin node + {vlm_count} VLM node = {len(nodes)} toplam"
+        log.debug(
+            f"Hibrit chunker tamamlandı: "
+            f"{text_count} metin node + {vlm_count} VLM node = {len(nodes)} toplam."
         )
         return nodes
 
@@ -766,10 +808,16 @@ class DocumentParser:
                         # Heading bazlı kesmede overlap yok — konular zaten farklı
                         final_sections.append((chunk, ""))
 
+                log.debug(
+                    f"Section MAX aşıyor ({total} char), heading bazlı bölündü: "
+                    f"{len(temp_splits)} parça."
+                )
+
             else:
                 # ── Node sınırı bazlı bölme (heading yok veya tek heading) ───
                 # Başlık yapısı olmayan belgeler (düz makale, rapor vb.) için.
                 # Konu sürekliliği için önceki parçanın sonu sonrakine taşınır.
+                before = len(final_sections)
                 overlap_tail = ""
                 current_chunk: list = []
                 current_len = 0
@@ -792,6 +840,12 @@ class DocumentParser:
 
                 if current_chunk:
                     final_sections.append((current_chunk, overlap_tail))
+
+                created = len(final_sections) - before
+                log.debug(
+                    f"Section MAX aşıyor ({total} char), node sınırı bazlı bölündü: "
+                    f"{created} parça, ~{SECTION_OVERLAP_CHARS} char overlap."
+                )
 
         # ── Aşama 3: Parent node'ları üret ───────────────────────────────────────
         result_nodes: list = []
@@ -854,9 +908,7 @@ class DocumentParser:
 
             result_nodes.append(parent_node)
 
-        print(
-            f"[SİSTEM] Section parent'ları oluşturuldu: {len(final_sections)} section"
-        )
+        log.debug(f"Section parent'ları oluşturuldu: {len(final_sections)} section.")
         return result_nodes
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -878,21 +930,26 @@ class DocumentParser:
                 f"HATA: Ayrıştırılacak belge bulunamadı → {file_path}"
             )
 
-        print(f"[{file_path}] ayrıştırıcıya (parser) alındı...")
-
+        parse_start = time.time()
         base_name = os.path.basename(file_path)
+        log.info(f"Parse başlatıldı: {base_name}")
+
         name_without_ext = os.path.splitext(base_name)[0]
         temp_img_dir = os.path.join("backend", "data", "temp_images", name_without_ext)
         os.makedirs(temp_img_dir, exist_ok=True)
 
         # ── Adım 1 ───────────────────────────────────────────────────────────
-        print("[SİSTEM] pymupdf4llm (Layout modu) çalıştırılıyor...")
+        log.debug("Adım 1: pymupdf4llm (Layout modu) çalıştırılıyor.")
+        step_t = time.time()
         md_pages = pymupdf4llm.to_markdown(
             doc=file_path,
             write_images=True,
             image_path=temp_img_dir,
             dpi=235,
             page_chunks=True,
+        )
+        log.debug(
+            f"Adım 1 bitti: {len(md_pages)} sayfa, {time.time() - step_t:.2f} sn."
         )
 
         # ── Adım 2 ───────────────────────────────────────────────────────────
@@ -910,9 +967,9 @@ class DocumentParser:
         # parse() içinde, _chunking_with_vlm_awareness'tan sonra
         nodes = self._create_section_parents(nodes)  # ← YENİ: parent-child katmanı
 
-        print(f"Başarılı! Doküman {len(nodes)} adet düğüme ayrıştırıldı.")
+        log.info(
+            f"Parse tamamlandı: {base_name} — "
+            f"{len(md_pages)} sayfa, {len(nodes)} node, "
+            f"{time.time() - parse_start:.2f} sn."
+        )
         return nodes
-
-
-if __name__ == "__main__":
-    print("Test için lütfen ingest.py dosyasını kullanınız.")

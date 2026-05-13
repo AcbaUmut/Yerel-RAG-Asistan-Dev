@@ -1,9 +1,12 @@
 import gc
+import logging
 import time
 
 from core.config import AppConfig
 from core.llm_engine import LLMEngine
 from core.retriever import RetrieverEngine
+
+log = logging.getLogger(__name__)
 
 
 class QueryEngine:
@@ -37,23 +40,23 @@ class QueryEngine:
         file_name: Hangi dokümanda arama yapılacak. RetrieverEngine'a
                    metadata filtresi olarak iletilir.
         """
-        print("\n=== SORGU BAŞLATILDI ===")
-        print(f"Koleksiyon: {self.collection_name}")
-        print(f"Doküman   : {file_name}")
-        print(f"Soru      : {question}\n")
+        log.info(
+            f"Sorgu başlatıldı — koleksiyon: '{self.collection_name}', "
+            f"doküman: '{file_name}', soru: {question!r}"
+        )
         start_time = time.time()
 
         # ── 1. Retriever ──
-        print("[1/3] Retriever yükleniyor...")
+        log.info("Retriever yükleniyor...")
         t = time.time()
         retriever = RetrieverEngine(
             collection_name=self.collection_name,
             persist_dir=self.persist_dir,
         )
-        print(f"      Hazır. ({time.time() - t:.2f} sn)\n")
+        log.debug(f"Retriever hazır ({time.time() - t:.2f} sn).")
 
         # ── 2. Bağlam çek ──
-        print("[2/3] Veritabanında arama + reranker...")
+        log.info("Veritabanında arama + reranker çalışıyor...")
         t = time.time()
         context_text = retriever.get_relevant_context(
             query=question,
@@ -61,32 +64,34 @@ class QueryEngine:
             threshold=0.0,
             file_name=file_name,
         )
-        print(f"      Bağlam hazır. ({time.time() - t:.2f} sn)\n")
+        log.debug(f"Bağlam hazır ({time.time() - t:.2f} sn).")
 
         retriever.unload()
         del retriever
         gc.collect()
 
         if not context_text:
-            print("[UYARI] Bağlam boş — LLM çağrılmadan dönülüyor.")
+            log.warning("Bağlam boş — LLM çağrılmadan dönülüyor.")
             return "Bu doküman için sorguya uygun bir bağlam bulunamadı."
 
         # ── 3. LLM ──
-        print("[3/3] LLM yükleniyor ve cevap üretiyor...")
+        log.info("LLM yükleniyor ve cevap üretiyor...")
         t = time.time()
         llm = LLMEngine()
-        print(f"      LLM hazır. ({time.time() - t:.2f} sn)\n")
+        log.debug(f"LLM hazır ({time.time() - t:.2f} sn).")
 
         gen_start = time.time()
         answer = llm.generate_answer(context=context_text, question=question)
+        # Cevabın kendisi UI çıktısı — print olarak kullanıcıya gösterilir.
+        # Logger formatı (köşeli parantezler vs.) burada uygunsuz olur.
         print("=" * 60)
         print(answer)
         print("=" * 60)
-        print(f"\nÜretim süresi: {time.time() - gen_start:.2f} sn")
+        log.info(f"LLM cevabı üretildi ({time.time() - gen_start:.2f} sn).")
 
         llm.unload()
         del llm
         gc.collect()
 
-        print(f"\n=== TOPLAM SÜRE: {time.time() - start_time:.2f} sn ===")
+        log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")
         return answer

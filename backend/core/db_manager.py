@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import re
 
 import chromadb
 from core.ingestion_engine import IngestionEngine
+
+log = logging.getLogger(__name__)
 
 
 class DBManager:
@@ -30,16 +33,23 @@ class DBManager:
         self.catalog_path = os.path.join(persist_dir, self.CATALOG_FILE)
         self.active_collection: str = self.DEFAULT_COLLECTION
         self.sections_path = os.path.join(persist_dir, "sections.json")
-        self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
 
         # Dizin yoksa oluştur — ChromaDB de aynı dizine yazacak
         os.makedirs(self.persist_dir, exist_ok=True)
+
+        # ChromaDB client — başarısız olursa anlamlı log + yeniden fırlat
+        try:
+            self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
+            log.debug(f"ChromaDB client başlatıldı: {self.persist_dir}")
+        except Exception as e:
+            log.critical(f"ChromaDB client başlatılamadı: {e}", exc_info=True)
+            raise
 
         # Catalog yoksa boş bir tane oluştur, default koleksiyon hep var olsun
         if not os.path.exists(self.catalog_path):
             initial = {"collections": {self.DEFAULT_COLLECTION: {"documents": {}}}}
             self._save_catalog(initial)
-            print(f"[SİSTEM] Yeni catalog oluşturuldu: {self.catalog_path}")
+            log.info(f"Yeni catalog oluşturuldu: {self.catalog_path}")
 
         # Önceki oturumdan kalan orphan segment klasörlerini temizle
         self._cleanup_orphan_segments()
@@ -48,13 +58,28 @@ class DBManager:
 
     def _load_catalog(self) -> dict:
         """Catalog'u diskten okur, dict olarak döndürür."""
-        with open(self.catalog_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(self.catalog_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            log.critical(
+                f"Catalog dosyası bozuk: {self.catalog_path} — {e}",
+                exc_info=True,
+            )
+            raise
+        except OSError as e:
+            log.error(f"Catalog dosyası okunamadı: {e}", exc_info=True)
+            raise
 
     def _save_catalog(self, catalog: dict) -> None:
         """Catalog'u diske yazar. Tüm yazma işlemleri buradan geçer."""
-        with open(self.catalog_path, "w", encoding="utf-8") as f:
-            json.dump(catalog, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.catalog_path, "w", encoding="utf-8") as f:
+                json.dump(catalog, f, ensure_ascii=False, indent=2)
+            log.debug(f"Catalog kaydedildi: {self.catalog_path}")
+        except OSError as e:
+            log.error(f"Catalog dosyası yazılamadı: {e}", exc_info=True)
+            raise
 
     # ── Koleksiyon yönetimi ──────────────────────────────────────────────────
 
@@ -64,56 +89,52 @@ class DBManager:
         return list(catalog["collections"].keys())
 
     def create_collection(self, name: str) -> bool:
-        """
-        Yeni koleksiyon oluşturur. Catalog'a ekler ve ChromaDB'de de boş
-        bir koleksiyon açar (ikisi senkron olsun).
-        """
+        """..."""
         name = name.strip()
         if not name:
-            print("[HATA] Koleksiyon adı boş olamaz.")
+            log.warning("Koleksiyon adı boş olamaz.")
             return False
 
         if not self.COLLECTION_NAME_PATTERN.match(name):
-            print(
-                "[HATA] Geçersiz koleksiyon adı. Kurallar:\n"
-                "  - 3 ila 50 karakter\n"
-                "  - Sadece harf, rakam, . _ -\n"
-                "  - Başı ve sonu harf veya rakam olmalı"
+            log.warning(
+                f"Geçersiz koleksiyon adı: '{name}'. Kurallar: "
+                "3-50 karakter, sadece harf/rakam/._-, başı ve sonu alfanumerik."
             )
             return False
 
         catalog = self._load_catalog()
         if name in catalog["collections"]:
-            print(f"[HATA] '{name}' adında bir koleksiyon zaten var.")
+            log.warning(f"'{name}' adında bir koleksiyon zaten var.")
             return False
 
-        self.chroma_client.get_or_create_collection(name)
+        try:
+            self.chroma_client.get_or_create_collection(name)
+        except Exception as e:
+            log.error(f"ChromaDB koleksiyonu oluşturulamadı: {e}", exc_info=True)
+            return False
+
         catalog["collections"][name] = {"documents": {}}
         self._save_catalog(catalog)
-        print(f"[SİSTEM] Koleksiyon oluşturuldu: '{name}'")
+        log.info(f"Koleksiyon oluşturuldu: '{name}'")
         return True
 
     def delete_collection(self, name: str) -> bool:
-        """
-        Koleksiyonu siler: ChromaDB + sections.json + catalog. Default
-        koleksiyon silinemez. Aktif koleksiyon siliniyorsa default'a düşer.
-        """
+        """..."""
         if name == self.DEFAULT_COLLECTION:
-            print(f"[HATA] '{self.DEFAULT_COLLECTION}' koleksiyonu silinemez.")
+            log.warning(f"'{self.DEFAULT_COLLECTION}' koleksiyonu silinemez.")
             return False
 
         catalog = self._load_catalog()
         if name not in catalog["collections"]:
-            print(f"[HATA] '{name}' adında koleksiyon yok.")
+            log.warning(f"'{name}' adında koleksiyon yok.")
             return False
+
+        log.info(f"Koleksiyon silme başlatıldı: '{name}'")
 
         try:
             self.chroma_client.delete_collection(name)
         except Exception as e:
-            print(f"[UYARI] ChromaDB tarafında silme hatası: {e}")
-
-        # SQLite kaydı silindi, mmap'leri serbest bırakmak için client'ı yenile
-        self._reset_chroma_client()
+            log.warning(f"ChromaDB tarafında silme hatası: {e}", exc_info=True)
 
         self._delete_sections_by_collection(name)
 
@@ -122,21 +143,21 @@ class DBManager:
 
         if self.active_collection == name:
             self.active_collection = self.DEFAULT_COLLECTION
-            print(f"[SİSTEM] Aktif koleksiyon '{self.DEFAULT_COLLECTION}'a alındı.")
+            log.info(f"Aktif koleksiyon '{self.DEFAULT_COLLECTION}'a alındı.")
 
         self._vacuum_db()
-        print(f"[SİSTEM] Koleksiyon silindi: '{name}'")
-        print("[BİLGİ] Segment klasörleri programı yeniden başlattığında temizlenecek.")
+        log.info(f"Koleksiyon silindi: '{name}'")
+        log.info("Segment klasörleri programı yeniden başlattığında temizlenecek.")
         return True
 
     def set_active_collection(self, name: str) -> bool:
         """Aktif koleksiyonu değiştirir. Hedef koleksiyon var olmak zorunda."""
         catalog = self._load_catalog()
         if name not in catalog["collections"]:
-            print(f"[HATA] '{name}' adında koleksiyon yok.")
+            log.warning(f"'{name}' adında koleksiyon yok.")
             return False
         self.active_collection = name
-        print(f"[SİSTEM] Aktif koleksiyon: '{name}'")
+        log.info(f"Aktif koleksiyon: '{name}'")
         return True
 
     # ── Yardımcılar ──────────────────────────────────────────────────────────
@@ -144,19 +165,35 @@ class DBManager:
     def _delete_sections_by_collection(self, collection_name: str) -> None:
         """sections.json'dan belirtilen koleksiyona ait section'ları siler."""
         if not os.path.exists(self.sections_path):
+            log.debug("sections.json yok, koleksiyon section silme atlandı.")
             return
 
-        with open(self.sections_path, "r", encoding="utf-8") as f:
-            sections = json.load(f)
+        try:
+            with open(self.sections_path, "r", encoding="utf-8") as f:
+                sections = json.load(f)
+        except Exception as e:
+            log.error(f"sections.json okunamadı: {e}", exc_info=True)
+            return
 
+        # Silmeden önce ve sonra kayıt sayısı — silme operasyonunun gerçekten
+        # bir şey yaptığını dosyada görmek için
+        before = len(sections)
         filtered = {
             sid: data
             for sid, data in sections.items()
             if data.get("metadata", {}).get("collection_name") != collection_name
         }
+        removed = before - len(filtered)
 
-        with open(self.sections_path, "w", encoding="utf-8") as f:
-            json.dump(filtered, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.sections_path, "w", encoding="utf-8") as f:
+                json.dump(filtered, f, ensure_ascii=False, indent=2)
+            log.debug(
+                f"sections.json'dan {removed} section silindi "
+                f"(koleksiyon: {collection_name})"
+            )
+        except Exception as e:
+            log.error(f"sections.json yazılamadı: {e}", exc_info=True)
 
     # ── Doküman yönetimi ─────────────────────────────────────────────────────
 
@@ -164,23 +201,33 @@ class DBManager:
         self,
         file_paths: list[str],
         collection: str | None = None,
-        on_conflict: str = "ask",
+        on_conflict: dict[str, str] | str = "ask",
     ) -> dict:
         """
         Çoklu PDF ekleme. IngestionEngine'i çağırır, catalog'u günceller.
 
         on_conflict:
-            "ask"       → çağıran tarafa bırak (app.py kullanıcıya sorar)
-            "overwrite" → mevcut dokümanı sil, yeniyi yaz
-            "skip"      → mevcut dokümanı atla
-        """
+            str biçiminde verilirse tüm çakışan dosyalara aynı karar uygulanır:
+                "ask"       → çağıran tarafa bırak (app.py kullanıcıya sorar)
+                "overwrite" → mevcut dokümanı sil, yeniyi yaz
+                "skip"      → mevcut dokümanı atla
 
+            dict biçiminde verilirse her dosya için ayrı karar:
+                {"a.pdf": "overwrite", "b.pdf": "skip", ...}
+                Çakışmayan dosyalar için dict'te entry olmasa da olur.
+        """
         collection = collection or self.active_collection
         catalog = self._load_catalog()
 
         if collection not in catalog["collections"]:
-            print(f"[HATA] '{collection}' adında koleksiyon yok.")
+            log.error(f"'{collection}' adında koleksiyon yok.")
             return {"success": [], "failed": [], "skipped": []}
+
+        # Başlangıç logu — operasyonun nereden tetiklendiği dosyaya işlenir
+        log.info(
+            f"Doküman ekleme başlatıldı: {len(file_paths)} dosya, "
+            f"koleksiyon: '{collection}', on_conflict: {on_conflict!r}"
+        )
 
         # ── Çakışma filtresi ──
         to_process: list[str] = []
@@ -194,23 +241,34 @@ class DBManager:
                 to_process.append(path)
                 continue
 
-            if on_conflict == "overwrite":
-                # Eski kaydı sil, sonra yeniyi yaz
-                self.delete_document(file_name, collection=collection)
+            # Bu dosya için geçerli karar nedir?
+            # dict ise dosyaya özel karar, yoksa toplu kararı uygula
+            if isinstance(on_conflict, dict):
+                decision = on_conflict.get(file_name, "ask")
+            else:
+                decision = on_conflict
+
+            if decision == "overwrite":
+                # Üzerine yazma kararı kritik — sonradan "neden silindi?" sorusunda
+                # bu satır cevap verecek. Toplu silme metodunu tek elemanlı
+                # listeyle çağırıyoruz — tek bir silme yolu olsun.
+                log.info(f"'{file_name}' üzerine yazılacak (eski kayıt siliniyor).")
+                self.delete_documents([file_name], collection=collection)
                 to_process.append(path)
-            elif on_conflict == "skip":
+            elif decision == "skip":
                 skipped.append({"file_name": file_name, "reason": "Zaten var"})
-                print(f"[ATLA] '{file_name}' zaten var, atlanıyor.")
+                log.info(f"'{file_name}' zaten var, atlanıyor.")
             else:  # "ask" — app.py burayı çağırmadan önce karar vermeli
-                print(
-                    f"[HATA] '{file_name}' zaten var. App katmanı on_conflict "
-                    "kararını vermeden bu method çağrılmamalı."
+                log.error(
+                    f"'{file_name}' zaten var. App katmanı on_conflict kararı "
+                    "vermeden bu method çağrılmamalı."
                 )
                 skipped.append(
                     {"file_name": file_name, "reason": "Çakışma — karar verilmemiş"}
                 )
 
         if not to_process:
+            log.warning("İşlenecek dosya kalmadı.")
             return {"success": [], "failed": [], "skipped": skipped}
 
         # ── IngestionEngine'i çalıştır ──
@@ -218,11 +276,18 @@ class DBManager:
         result = engine.run(file_paths=to_process, collection_name=collection)
 
         # ── Catalog güncelle ──
-        catalog = self._load_catalog()  # yeniden oku (delete_document yazmış olabilir)
+        catalog = self._load_catalog()  # yeniden oku (delete_documents yazmış olabilir)
         for item in result["success"]:
             file_name = item.pop("file_name")
             catalog["collections"][collection]["documents"][file_name] = item
         self._save_catalog(catalog)
+
+        # Bitiş özeti — bir bakışta operasyonun sonucu
+        log.info(
+            f"Doküman ekleme tamamlandı: "
+            f"{len(result['success'])} başarılı, "
+            f"{len(result['failed'])} başarısız, {len(skipped)} atlanan."
+        )
 
         return {
             "success": result["success"],
@@ -245,7 +310,7 @@ class DBManager:
         catalog = self._load_catalog()
 
         if collection not in catalog["collections"]:
-            print(f"[HATA] '{collection}' adında koleksiyon yok.")
+            log.warning(f"'{collection}' adında koleksiyon yok.")
             return []
 
         docs = catalog["collections"][collection]["documents"]
@@ -274,35 +339,43 @@ class DBManager:
 
         catalog = self._load_catalog()
         if collection not in catalog["collections"]:
-            print(f"[HATA] '{collection}' adında koleksiyon yok.")
+            log.error(f"'{collection}' adında koleksiyon yok.")
             return {"deleted": [], "failed": []}
+
+        # Operasyon başlangıcı — kaç dosyanın hangi koleksiyonda silinmeye
+        # çalışıldığı dosyaya kaydoluyor
+        log.info(
+            f"Toplu doküman silme başlatıldı: {len(file_names)} dosya, "
+            f"koleksiyon: '{collection}'"
+        )
 
         for file_name in file_names:
             if file_name not in catalog["collections"][collection]["documents"]:
                 failed.append({"file_name": file_name, "reason": "Koleksiyonda yok"})
+                log.warning(f"'{file_name}' koleksiyonda yok, atlanıyor.")
                 continue
 
-            # ChromaDB
             try:
                 chroma_col = self.chroma_client.get_or_create_collection(collection)
                 chroma_col.delete(where={"file_name": file_name})
             except Exception as e:
                 failed.append({"file_name": file_name, "reason": f"ChromaDB: {e}"})
+                # ERROR seviyesinde — kullanıcı verisi yarım silinmiş olabilir,
+                # bu bilgi mutlaka dosyaya zengin biçimde gitmeli
+                log.error(f"'{file_name}' ChromaDB'den silinemedi: {e}", exc_info=True)
                 continue
 
-            # sections.json
             self._delete_sections_by_document(file_name, collection)
-
-            # catalog
             del catalog["collections"][collection]["documents"][file_name]
             deleted.append(file_name)
+            # Her başarılı silmeyi tek tek DEBUG'a yaz — dosyada tam sıralı iz olsun
+            log.debug(f"Doküman silindi: '{file_name}'")
 
         self._save_catalog(catalog)
 
-        # Toplu temizlik
         if deleted:
             self._vacuum_db()
-            print(f"[SİSTEM] {len(deleted)} doküman silindi.")
+            log.info(f"{len(deleted)} doküman silindi, {len(failed)} başarısız.")
 
         return {"deleted": deleted, "failed": failed}
 
@@ -316,11 +389,17 @@ class DBManager:
         section'ları siler.
         """
         if not os.path.exists(self.sections_path):
+            log.debug("sections.json yok, doküman section silme atlandı.")
             return
 
-        with open(self.sections_path, "r", encoding="utf-8") as f:
-            sections = json.load(f)
+        try:
+            with open(self.sections_path, "r", encoding="utf-8") as f:
+                sections = json.load(f)
+        except Exception as e:
+            log.error(f"sections.json okunamadı: {e}", exc_info=True)
+            return
 
+        before = len(sections)
         filtered = {
             sid: data
             for sid, data in sections.items()
@@ -329,9 +408,17 @@ class DBManager:
                 and data.get("metadata", {}).get("collection_name") == collection_name
             )
         }
+        removed = before - len(filtered)
 
-        with open(self.sections_path, "w", encoding="utf-8") as f:
-            json.dump(filtered, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.sections_path, "w", encoding="utf-8") as f:
+                json.dump(filtered, f, ensure_ascii=False, indent=2)
+            log.debug(
+                f"sections.json'dan {removed} section silindi "
+                f"(doküman: {file_name}, koleksiyon: {collection_name})"
+            )
+        except Exception as e:
+            log.error(f"sections.json yazılamadı: {e}", exc_info=True)
 
     def _vacuum_db(self) -> None:
         """
@@ -345,13 +432,22 @@ class DBManager:
 
         sqlite_path = os.path.join(self.persist_dir, "chroma.sqlite3")
         if not os.path.exists(sqlite_path):
+            log.debug("VACUUM atlandı: chroma.sqlite3 yok.")
             return
         try:
+            # Önce/sonra boyut karşılaştırması debug açısından çok değerli;
+            # silmenin gerçekten dosyayı küçülttüğünü dosyada görebilirsin
+            size_before = os.path.getsize(sqlite_path)
             conn = sqlite3.connect(sqlite_path)
             conn.execute("VACUUM")
             conn.close()
+            size_after = os.path.getsize(sqlite_path)
+            log.debug(
+                f"VACUUM tamamlandı: {size_before / 1024:.0f} KB → "
+                f"{size_after / 1024:.0f} KB"
+            )
         except Exception as e:
-            print(f"[UYARI] VACUUM sırasında: {e}")
+            log.warning(f"VACUUM sırasında hata: {e}", exc_info=True)
 
     def _cleanup_orphan_segments(self) -> None:
         """
@@ -376,7 +472,7 @@ class DBManager:
             active_ids = {row[0] for row in cur.fetchall()}
             conn.close()
         except Exception as e:
-            print(f"[UYARI] Segment ID'leri okunamadı: {e}")
+            log.warning(f"Segment ID'leri okunamadı: {e}", exc_info=True)
             return
 
         # persist_dir altındaki UUID klasörlerini tara
@@ -385,6 +481,7 @@ class DBManager:
             re.IGNORECASE,
         )
         removed = 0
+        failed = 0
         for entry in os.listdir(self.persist_dir):
             full_path = os.path.join(self.persist_dir, entry)
             if not os.path.isdir(full_path):
@@ -397,22 +494,15 @@ class DBManager:
             try:
                 shutil.rmtree(full_path)
                 removed += 1
+                log.debug(f"Orphan segment silindi: {entry}")
             except Exception as e:
-                print(f"[UYARI] Orphan segment silinemedi ({entry}): {e}")
+                # Beklenen davranış: Windows mmap kilidi, çalışma sırasında
+                # silinemez, sonraki açılışta otomatik temizlenir.
+                # Bu yüzden DEBUG seviyesi yeterli, terminal kirletmiyor.
+                failed += 1
+                log.debug(f"Orphan segment silinemedi ({entry}): {e}")
 
         if removed:
-            print(f"[SİSTEM] {removed} orphan segment klasörü temizlendi.")
-
-    def _reset_chroma_client(self) -> None:
-        """
-        ChromaDB client'ını yıkıp yeniden oluşturur.
-
-        Windows'ta segment dosyaları mmap ile açık tutuluyor; client
-        canlıyken silinmiş koleksiyonların dosyaları kilitli kalıyor.
-        Reset, bütün mmap'leri serbest bırakır.
-        """
-        import gc
-
-        del self.chroma_client
-        gc.collect()
-        self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
+            log.info(f"{removed} orphan segment klasörü temizlendi.")
+        if failed:
+            log.debug(f"{failed} orphan segment kilitli (sonraki açılışta denenecek).")

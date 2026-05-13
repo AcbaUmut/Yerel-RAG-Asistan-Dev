@@ -5,6 +5,7 @@ Kategorisiz, kural tabanlı evrensel prompt.
 
 import base64
 import io
+import logging
 import os
 import time
 
@@ -12,6 +13,8 @@ from core.config import AppConfig
 from llama_cpp import Llama
 from llama_cpp.llama_chat_format import Qwen3VLChatHandler
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 _PATCH_SIZE: int = 32
 _VLM_MAX_PIXELS: int = 1_310_720
@@ -29,10 +32,9 @@ class VLMEngine:
                 f"  mmproj: {self.mmproj_path}"
             )
 
-        print("[SİSTEM] VLM Motoru (ZwZ-4B) VRAM'e yükleniyor...")
-
         self.chat_handler = Qwen3VLChatHandler(clip_model_path=self.mmproj_path)
 
+        load_start = time.time()
         self.llm = Llama(
             model_path=self.model_path,
             chat_handler=self.chat_handler,
@@ -46,7 +48,7 @@ class VLMEngine:
             verbose=False,
         )
 
-        print("[SİSTEM] VLM Motoru başarıyla ayağa kalktı.")
+        log.info(f"VLM Motoru (ZwZ-4B) yüklendi ({time.time() - load_start:.2f} sn).")
 
     def _prepare_image(self, file_path: str) -> str:
         with Image.open(file_path) as img:
@@ -60,13 +62,13 @@ class VLMEngine:
                 img = img.resize((new_w, new_h), Image.LANCZOS)
                 old_tok = (w * h) // (_PATCH_SIZE**2)
                 new_tok = (new_w * new_h) // (_PATCH_SIZE**2)
-                print(
+                log.debug(
                     f"      Boyutlandırıldı: {w}×{h} → {new_w}×{new_h} "
                     f"(~{old_tok} → ~{new_tok} vision token)"
                 )
             else:
                 tok = (w * h) // (_PATCH_SIZE**2)
-                print(f"      Boyut: {w}×{h} (~{tok} vision token)")
+                log.debug(f"      Boyut: {w}×{h} (~{tok} vision token)")
 
             buf = io.BytesIO()
             img.save(buf, format="PNG", optimize=True)
@@ -95,19 +97,19 @@ class VLMEngine:
 
     def extract_text(self, image_path: str) -> str:
         if not os.path.exists(image_path):
-            print(f"[VLM UYARI] Dosya bulunamadı: {image_path}")
+            log.warning(f"Görsel bulunamadı: {image_path}")
             return ""
 
         img_name = os.path.basename(image_path)
-        print(f"\n[VLM] Görsel analiz ediliyor: {img_name}")
+        log.info(f"Görsel analiz ediliyor: {img_name}")
 
         prep_start = time.time()
         try:
             data_uri = self._prepare_image(image_path)
         except Exception as e:
-            print(f"[VLM HATA] Görsel hazırlanamadı ({img_name}): {e}")
+            log.error(f"Görsel hazırlanamadı ({img_name}): {e}", exc_info=True)
             return ""
-        print(f"      Hazırlama: {time.time() - prep_start:.2f}s")
+        log.debug(f"      Hazırlama: {time.time() - prep_start:.2f}s")
 
         prompt = self._build_prompt()
 
@@ -148,16 +150,16 @@ class VLMEngine:
             content = response["choices"][0]["message"]["content"].strip()
             content = content.replace("[ANALİZ_BİTTİ]", "").strip()
 
-            print(f"      Inference: {inf_duration:.2f}s")
+            log.debug(f"      Inference: {inf_duration:.2f}s")
 
             if not content:
-                print(f"[VLM UYARI] Model boş içerik döndürdü ({img_name})")
+                log.warning(f"Model boş içerik döndürdü ({img_name})")
                 return ""
 
             return content
 
         except Exception as e:
-            print(f"[VLM HATA] Inference başarısız ({img_name}): {e}")
+            log.error(f"Inference başarısız ({img_name}): {e}", exc_info=True)
             return ""
 
     def unload(self) -> None:
@@ -171,11 +173,11 @@ class VLMEngine:
         """
         import gc
 
-        print("[SİSTEM] VLM Motoru VRAM'den tahliye ediliyor...")
+        log.info("VLM Motoru VRAM'den tahliye ediliyor...")
         # Sıra önemli: önce Llama (chat_handler'a referansı var), sonra handler
         if hasattr(self, "llm"):
             del self.llm
         if hasattr(self, "chat_handler"):
             del self.chat_handler
         gc.collect()
-        print("[SİSTEM] VLM belleği temizlendi.")
+        log.info("VLM belleği temizlendi.")

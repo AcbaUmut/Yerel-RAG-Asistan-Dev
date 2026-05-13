@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 
@@ -8,6 +9,8 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document as LCDocument
 from llama_cpp.llama_cpp import LLAMA_POOLING_TYPE_RANK
 from llama_cpp.llama_embedding import LlamaEmbedding
+
+log = logging.getLogger(__name__)
 
 
 class RetrieverEngine:
@@ -19,7 +22,7 @@ class RetrieverEngine:
         self.persist_dir = persist_dir
         self.collection_name = collection_name
 
-        print("[SİSTEM] Retriever modelleri belleğe alınıyor...")
+        log.info("Retriever modelleri belleğe alınıyor...")
 
         jina = JinaEmbeddings(device="cpu")
 
@@ -30,7 +33,7 @@ class RetrieverEngine:
             def embed_query(self, text):
                 return jina._get_query_embedding(text)
 
-        print("[SİSTEM] BGE Reranker GGUF yükleniyor...")
+        reranker_start = time.time()
         self.reranker = LlamaEmbedding(
             model_path=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
             pooling_type=LLAMA_POOLING_TYPE_RANK,
@@ -40,7 +43,7 @@ class RetrieverEngine:
             n_ubatch=4096,
             verbose=False,
         )
-        print("[SİSTEM] BGE Reranker GGUF başarıyla yüklendi.")
+        log.info(f"BGE Reranker GGUF yüklendi ({time.time() - reranker_start:.2f} sn).")
 
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
@@ -51,11 +54,19 @@ class RetrieverEngine:
         sections_file = os.path.join(self.persist_dir, "sections.json")
         self.sections_map: dict = {}
         if os.path.exists(sections_file):
-            with open(sections_file, "r", encoding="utf-8") as _f:
-                self.sections_map = json.load(_f)
-            print(f"[SİSTEM] {len(self.sections_map)} section parent belleğe yüklendi.")
+            try:
+                with open(sections_file, "r", encoding="utf-8") as _f:
+                    self.sections_map = json.load(_f)
+                log.info(f"{len(self.sections_map)} section parent belleğe yüklendi.")
+            except Exception as e:
+                log.error(f"sections.json okunamadı: {e}", exc_info=True)
         else:
-            print("[UYARI] sections.json bulunamadı. Önce ingest.py çalıştırın.")
+            # Eski mesaj 'ingest.py çalıştırın' diyordu, artık ingest.py yok.
+            # Kullanıcıyı doğru yere yönlendirelim.
+            log.warning(
+                "sections.json bulunamadı. Bu koleksiyona henüz "
+                "doküman eklenmemiş olabilir."
+            )
 
         # filter'lı base_retriever kalktı → Python tarafında filtreleme güvenilir
         self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
@@ -128,7 +139,7 @@ class RetrieverEngine:
                     if text and meta is not None:
                         extra_docs.append(LCDocument(page_content=text, metadata=meta))
         except Exception as e:
-            print(f"[UYARI] Komşu node'lar alınamadı: {e}")
+            log.warning(f"Komşu node'lar alınamadı: {e}", exc_info=True)
 
         # Birleştir → tekilleştir → belge sırasına göre sırala
         all_docs = docs + extra_docs
@@ -177,8 +188,9 @@ class RetrieverEngine:
                     )
                     continue
                 else:
-                    print(
-                        f"[UYARI] Section bulunamadı (id={section_id[:8]}...): sections.json'da yok"
+                    log.warning(
+                        f"Section bulunamadı (id={section_id[:8]}...): "
+                        "sections.json'da yok"
                     )
 
             # ── Yol 2: Fallback — eski komşu genişletme, içerik asla kaybolmasın ──
@@ -221,6 +233,7 @@ class RetrieverEngine:
         # Doküman filtresi varsa retriever'ı tek seferlik filter'lı kur.
         # Constructor'daki base_retriever sade kalır, oturum içinde
         # farklı dokümanlara sorgu atılabilir.
+        search_start = time.time()
         if file_name:
             filtered_retriever = self.vectorstore.as_retriever(
                 search_kwargs={
@@ -231,8 +244,10 @@ class RetrieverEngine:
             raw_docs = filtered_retriever.invoke(query)
         else:
             raw_docs = self.base_retriever.invoke(query)
+        search_ms = (time.time() - search_start) * 1000
+
         if not raw_docs:
-            print("[RETRIEVER] Hiç sonuç bulunamadı.")
+            log.warning("Hiç sonuç bulunamadı.")
             return ""
 
         # ── 2. Reranker ───────────────────────────────────────────────────────────
@@ -245,57 +260,73 @@ class RetrieverEngine:
         best_docs = [doc for _, doc in scored_docs[:top_n]]
 
         if not best_docs:
-            print(
-                f"[RETRIEVER] Reranker tüm sonuçları threshold={threshold} altında eledi."
-            )
+            log.warning(f"Reranker tüm sonuçları threshold={threshold} altında eledi.")
             return ""
 
         # ── 3. Debug: Reranker sonuçları ──────────────────────────────────────────
-        print("\n" + "═" * 70)
-        print("  RETRIEVER DEBUG")
-        print(f"  Sorgu  : {query[:60]}")
-        print(f"  Ham    : {len(raw_docs)} node çekildi")
-        print(f"  Reranker: {reranker_ms:.0f}ms — top-{top_n} seçildi")
-        print("─" * 70)
-
-        for i, (score, doc) in enumerate(scored_docs[:top_n]):
-            ntype = doc.metadata.get("node_type", "?")
-            nidx = doc.metadata.get("node_index", "?")
-            ss = doc.metadata.get("section_start_index", "?")
-            se = doc.metadata.get("section_end_index", "?")
-            sid = doc.metadata.get("section_id") or "yok"
-            prev = doc.page_content[:90].replace("\n", " ")
-            marker = "✓" if doc in best_docs else "✗"
-            print(
-                f"  [{i + 1}]{marker} score={score:+.4f} | {ntype}[{nidx}] | sec=[{ss}-{se}] | section_id:{sid}"
-            )
-            print(f"       {prev}...")
+        # Çok satırlı debug çıktısı tek bir DEBUG mesajı olarak yazılır.
+        # Böylece dosyada blok atomik kalır, başka modüllerin logları araya girmez.
+        # isEnabledFor kontrolü: DEBUG kapalıysa string birleştirme ve döngüye
+        # hiç girilmez, sorgu performansı etkilenmez.
+        if log.isEnabledFor(logging.DEBUG):
+            debug_lines = [
+                "═" * 70,
+                "  RETRIEVER DEBUG",
+                f"  Sorgu  : {query[:60]}",
+                f"  Ham    : {len(raw_docs)} node çekildi",
+                f"  Search  : {search_ms:.0f}ms (vektör araması, top-10)",
+                f"  Reranker: {reranker_ms:.0f}ms — top-{top_n} seçildi",
+                "─" * 70,
+            ]
+            for i, (score, doc) in enumerate(scored_docs[:top_n]):
+                ntype = doc.metadata.get("node_type", "?")
+                nidx = doc.metadata.get("node_index", "?")
+                ss = doc.metadata.get("section_start_index", "?")
+                se = doc.metadata.get("section_end_index", "?")
+                sid = doc.metadata.get("section_id") or "yok"
+                prev = doc.page_content[:90].replace("\n", " ")
+                marker = "✓" if doc in best_docs else "✗"
+                debug_lines.append(
+                    f"  [{i + 1}]{marker} score={score:+.4f} | "
+                    f"{ntype}[{nidx}] | sec=[{ss}-{se}] | section_id:{sid}"
+                )
+                debug_lines.append(f"       {prev}...")
+            # Başa ekstra \n: log formatter prefix'i (timestamp + seviye)
+            # tek satırda bırakır, blok altta hizalı başlar.
+            log.debug("\n" + "\n".join(debug_lines))
 
         # ── 4. Section genişletme ─────────────────────────────────────────────────
         expanded_docs = self._expand_with_section_context(best_docs)
 
-        # Debug: döndürülen section'lar
-        print("─" * 70)
-        print(f"  Section genişletme → {len(expanded_docs)} doc LLM'e gönderilecek:")
-        for doc in expanded_docs:
-            ntype = doc.metadata.get("node_type", "?")
-            nidx = doc.metadata.get("node_index", "?")
-            ss = doc.metadata.get("section_start_index", "?")
-            se = doc.metadata.get("section_end_index", "?")
-            clen = len(doc.page_content)
-            # Overlap prefix varsa atla — asıl içerikten önizleme göster.
-            # "[Önceki Bölüm Bağlamı: ...]" prefixleri debug'ı yanıltır.
-            content_for_preview = doc.page_content
-            if content_for_preview.startswith("[Önceki Bölüm Bağlamı:"):
-                skip = content_for_preview.find("\n\n")
-                if skip > 0:
-                    content_for_preview = content_for_preview[skip + 2 :]
+        # Debug: döndürülen section'lar — yine tek bir DEBUG mesajı
+        if log.isEnabledFor(logging.DEBUG):
+            debug_lines = [
+                "─" * 70,
+                f"  Section genişletme → {len(expanded_docs)} doc LLM'e gönderilecek:",
+            ]
+            for doc in expanded_docs:
+                ntype = doc.metadata.get("node_type", "?")
+                nidx = doc.metadata.get("node_index", "?")
+                ss = doc.metadata.get("section_start_index", "?")
+                se = doc.metadata.get("section_end_index", "?")
+                clen = len(doc.page_content)
+                # Overlap prefix varsa atla — asıl içerikten önizleme göster.
+                # "[Önceki Bölüm Bağlamı: ...]" prefixleri debug'ı yanıltır.
+                content_for_preview = doc.page_content
+                if content_for_preview.startswith("[Önceki Bölüm Bağlamı:"):
+                    skip = content_for_preview.find("\n\n")
+                    if skip > 0:
+                        content_for_preview = content_for_preview[skip + 2 :]
 
-            prev = content_for_preview[:60].replace("\n", " ")
-            print(
-                f"    {ntype}[{nidx}] | sec=[{ss}-{se}] | {clen} karakter | {prev}..."
-            )
-        print("═" * 70 + "\n")
+                prev = content_for_preview[:60].replace("\n", " ")
+                debug_lines.append(
+                    f"    {ntype}[{nidx}] | sec=[{ss}-{se}] | "
+                    f"{clen} karakter | {prev}..."
+                )
+            debug_lines.append("═" * 70)
+            # Başa ekstra \n: log formatter prefix'i (timestamp + seviye)
+            # tek satırda bırakır, blok altta hizalı başlar.
+            log.debug("\n" + "\n".join(debug_lines))
 
         # ── 5. Bağlam oluştur ─────────────────────────────────────────────────────
         parts = []
@@ -316,7 +347,7 @@ class RetrieverEngine:
         """
         import gc
 
-        print("[SİSTEM] Reranker bellekten tahliye ediliyor...")
+        log.info("Reranker bellekten tahliye ediliyor...")
         if hasattr(self, "base_retriever"):
             del self.base_retriever
         if hasattr(self, "vectorstore"):
@@ -324,4 +355,4 @@ class RetrieverEngine:
         if hasattr(self, "reranker"):
             del self.reranker
         gc.collect()
-        print("[SİSTEM] Bellek temizlendi.")
+        log.info("Reranker belleği temizlendi.")

@@ -1,9 +1,13 @@
+import logging
 import os
+import time
 
 from core.config import AppConfig
 from langchain_community.llms import LlamaCpp
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
+
+log = logging.getLogger(__name__)
 
 
 class LLMEngine:
@@ -13,7 +17,7 @@ class LLMEngine:
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Model dosyası bulunamadı: {self.model_path}")
 
-        print("[SİSTEM] LLM Motoru (Gemma) başlatılıyor...")
+        load_start = time.time()
 
         self.llm = LlamaCpp(
             model_path=self.model_path,
@@ -55,10 +59,17 @@ class LLMEngine:
 
         self.chain = self.prompt_template | self.llm | StrOutputParser()
 
+        log.info(
+            f"LLM Motoru (Gemma) yüklendi ({time.time() - load_start:.2f} sn)."
+        )
+
     def generate_answer(self, context: str, question: str) -> str:
         try:
             return self.chain.invoke({"context": context, "question": question})
         except Exception as e:
+            # ERROR seviyesi + exc_info: traceback dosyaya zengin biçimde gider,
+            # kullanıcı terminalde kısa mesaj görür, hata kaybolmaz.
+            log.error(f"LLM yanıt üretirken hata oluştu: {e}", exc_info=True)
             return f"LLM Yanıt Üretirken Hata Oluştu: {str(e)}"
 
     def unload(self):
@@ -70,10 +81,10 @@ class LLMEngine:
         """
         import gc
 
-        print("[SİSTEM] LLM bellekten tahliye ediliyor...")
+        log.info("LLM bellekten tahliye ediliyor...")
         if hasattr(self, "chain"):
             del self.chain
         if hasattr(self, "llm"):
             del self.llm
         gc.collect()
-        print("[SİSTEM] LLM belleği temizlendi.")
+        log.info("LLM belleği temizlendi.")

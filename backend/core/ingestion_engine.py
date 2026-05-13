@@ -1,4 +1,5 @@
 import gc
+import logging
 import os
 import time
 from datetime import datetime
@@ -6,6 +7,8 @@ from datetime import datetime
 from core.document_parser import DocumentParser
 from core.vector_store import VectorStoreEngine
 from core.vlm_engine import VLMEngine
+
+log = logging.getLogger(__name__)
 
 
 class IngestionEngine:
@@ -40,10 +43,10 @@ class IngestionEngine:
             }
         """
         if not file_paths:
-            print("[UYARI] İşlenecek dosya yok.")
+            log.warning("İşlenecek dosya yok.")
             return {"success": [], "failed": []}
 
-        print(f"\n=== INGESTION BAŞLATILDI — {len(file_paths)} dosya ===")
+        log.info(f"Ingestion başlatıldı: {len(file_paths)} dosya")
         start_time = time.time()
 
         # Her dosya için: file_path → parse sonucu (chunks) veya hata
@@ -51,49 +54,59 @@ class IngestionEngine:
         failed: list[dict] = []
 
         # ── Faz 1: VLM ile parse ─────────────────────────────────────────────
-        print("\n--- FAZ 1: VLM YÜKLENİYOR ---")
+        log.info("Faz 1: VLM yükleniyor...")
         vlm_engine = None
         try:
             vlm_engine = VLMEngine()
         except Exception as e:
-            print(f"[HATA] VLM yüklenemedi: {e}")
-            # VLM olmadan da parse edilebilir, görseller atlanır
-            # vlm_engine None kalır, parser bunu zaten handle ediyor
+            # WARNING seviyesi — sistem çökmüyor, sadece görseller atlanacak.
+            # Parser vlm_engine=None durumunu zaten handle ediyor.
+            log.warning(
+                f"VLM yüklenemedi, görselsiz devam ediliyor: {e}",
+                exc_info=True,
+            )
 
         parser = DocumentParser()
 
         for file_path in file_paths:
             file_name = os.path.basename(file_path)
-            print(f"\n[{file_name}] parse ediliyor...")
+            log.info(f"Parse ediliyor: {file_name}")
 
             if not os.path.exists(file_path):
                 failed.append({"file_name": file_name, "reason": "Dosya bulunamadı"})
-                print(f"[HATA] Dosya bulunamadı: {file_path}")
+                log.error(f"Dosya bulunamadı: {file_path}")
                 continue
 
             try:
+                # Per-file parse süresini ölç — tez için performans verisi olur
+                t = time.time()
                 chunks = parser.parse(file_path=file_path, vlm_engine=vlm_engine)
+                parse_duration = time.time() - t
                 parsed.append(
                     {"file_path": file_path, "file_name": file_name, "chunks": chunks}
                 )
+                log.debug(
+                    f"{file_name} parse edildi: {len(chunks)} node, "
+                    f"{parse_duration:.2f} sn"
+                )
             except Exception as e:
                 failed.append({"file_name": file_name, "reason": f"Parse hatası: {e}"})
-                print(f"[HATA] {file_name} parse edilemedi: {e}")
+                log.error(f"{file_name} parse edilemedi: {e}", exc_info=True)
 
         # VLM unload — VRAM serbest
         if vlm_engine is not None:
-            print("\n--- FAZ 1 BİTTİ — VLM TAHLİYE EDİLİYOR ---")
+            log.info("Faz 1 bitti, VLM tahliye ediliyor.")
             vlm_engine.unload()
             del vlm_engine
         gc.collect()
-        print("[SİSTEM] VRAM boşaltıldı.\n")
+        log.debug("VRAM boşaltıldı (Faz 1 sonu).")
 
         if not parsed:
-            print("[UYARI] Hiçbir dosya başarıyla parse edilemedi.")
+            log.warning("Hiçbir dosya başarıyla parse edilemedi, Faz 2 atlandı.")
             return {"success": [], "failed": failed}
 
         # ── Faz 2: Embedding + ChromaDB yazımı ───────────────────────────────
-        print("--- FAZ 2: EMBEDDING (JINA) YÜKLENİYOR ---")
+        log.info("Faz 2: Embedding (Jina) yükleniyor...")
         vector_engine = VectorStoreEngine(
             persist_dir=self.persist_dir,
             collection_name=collection_name,
@@ -110,9 +123,12 @@ class IngestionEngine:
                 for node in chunks:
                     node.metadata["collection_name"] = collection_name
 
+                # Per-file yazma süresini ölç
+                t = time.time()
                 child_count, section_count = vector_engine.add_nodes(
                     nodes=chunks, file_name=file_name
                 )
+                write_duration = time.time() - t
                 success.append(
                     {
                         "file_name": file_name,
@@ -121,22 +137,29 @@ class IngestionEngine:
                         "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                 )
+                log.debug(
+                    f"{file_name} yazıldı: {child_count} child, "
+                    f"{section_count} section, {write_duration:.2f} sn"
+                )
             except Exception as e:
                 failed.append({"file_name": file_name, "reason": f"Yazma hatası: {e}"})
-                print(f"[HATA] {file_name} ChromaDB'ye yazılamadı: {e}")
+                log.error(f"{file_name} ChromaDB'ye yazılamadı: {e}", exc_info=True)
 
         # ── Faz 2 sonu: embedding modelini VRAM'den at ──
-        print("\n--- FAZ 2 BİTTİ — EMBEDDING MODELİ TAHLİYE EDİLİYOR ---")
+        log.info("Faz 2 bitti, embedding modeli tahliye ediliyor.")
         vector_engine.unload()
         del vector_engine
         gc.collect()
 
         # ── Özet rapor ───────────────────────────────────────────────────────
         elapsed = time.time() - start_time
-        print(f"\n=== INGESTION TAMAMLANDI ({elapsed:.1f} sn) ===")
-        print(f"  Başarılı: {len(success)}")
-        print(f"  Başarısız: {len(failed)}")
+        log.info(
+            f"Ingestion tamamlandı ({elapsed:.1f} sn): "
+            f"{len(success)} başarılı, {len(failed)} başarısız."
+        )
+        # Başarısız dosyaları tek tek WARNING'e dök — kullanıcı hangi dosyanın
+        # neden düştüğünü terminalde de görmeli, sadece dosyada değil
         for f in failed:
-            print(f"    - {f['file_name']}: {f['reason']}")
+            log.warning(f"Başarısız: {f['file_name']} — {f['reason']}")
 
         return {"success": success, "failed": failed}

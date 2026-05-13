@@ -1,6 +1,8 @@
 import gc
 import json
+import logging
 import os
+import time
 from typing import List, Optional
 
 import chromadb
@@ -10,6 +12,8 @@ from llama_index.core.embeddings import BaseEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from optimum.onnxruntime import ORTModelForFeatureExtraction
 from transformers import AutoTokenizer
+
+log = logging.getLogger(__name__)
 
 
 class JinaEmbeddings(BaseEmbedding):
@@ -39,7 +43,8 @@ class JinaEmbeddings(BaseEmbedding):
 
     # ── Yükleme / Tahliye ────────────────────────────────────────────────
     def _load(self) -> None:
-        print(f"[SİSTEM] Jina V5 Nano ONNX ({self._device.upper()}) yükleniyor...")
+        load_start = time.time()
+        log.info(f"Jina V5 Nano ONNX ({self._device.upper()}) yükleniyor...")
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_dir, trust_remote_code=True, local_files_only=True
@@ -82,18 +87,21 @@ class JinaEmbeddings(BaseEmbedding):
                 "  4) Windows'ta cuDNN bin klasörü PATH'e eklenmiş olmalı"
             )
 
-        print(f"[SİSTEM] Jina V5 Nano ONNX hazır. Aktif provider: {active[0]}")
+        log.info(
+            f"Jina V5 Nano ONNX yüklendi ({time.time() - load_start:.2f} sn). "
+            f"Aktif provider: {active[0]}"
+        )
 
     def unload(self) -> None:
         """ORT InferenceSession'ı serbest bırakır; CUDA buffer'lar destructor'da temizlenir."""
-        print(f"[SİSTEM] Jina embedding ({self._device.upper()}) tahliye ediliyor...")
+        log.info(f"Jina embedding ({self._device.upper()}) tahliye ediliyor...")
         self._model = None
         self._tokenizer = None
         gc.collect()
         # Not: torch.cuda.empty_cache() ÇAĞIRILMIYOR.
         # ORT'un CUDA bellek arenası torch'tan ayrıdır; ORT session destructor'u
         # kendi buffer'larını serbest bırakır. del + gc yeterli.
-        print("[SİSTEM] Jina embedding belleği temizlendi.")
+        log.info("Jina embedding belleği temizlendi.")
 
     # ── Encode (numpy I/O) ───────────────────────────────────────────────
     def _encode(self, texts: List[str]) -> List[List[float]]:
@@ -150,16 +158,16 @@ class JinaEmbeddings(BaseEmbedding):
 class VectorStoreEngine:
     def __init__(
         self,
-        persist_dir: str = "./backend/chroma_db",
-        collection_name: str = "tez_koleksiyonu",
-        embed_device: str = "cuda",  # ← yeni
+        persist_dir: str = "./backend/data/database",
+        collection_name: str = "default",
+        embed_device: str = "cuda",
     ):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
 
-        print(f"[SİSTEM] VectorStoreEngine başlatılıyor... ({embed_device.upper()})")
+        log.info(f"VectorStoreEngine başlatılıyor ({embed_device.upper()})...")
 
-        self.embed_model = JinaEmbeddings(device=embed_device)  # ← referansı tut
+        self.embed_model = JinaEmbeddings(device=embed_device)
         Settings.embed_model = self.embed_model
         Settings.llm = None
 
@@ -192,8 +200,15 @@ class VectorStoreEngine:
         # Mevcut dosyayı yükle (başka PDF'lerden gelen section'lar korunur)
         existing: dict = {}
         if os.path.exists(sections_file):
-            with open(sections_file, "r", encoding="utf-8") as f:
-                existing = json.load(f)
+            try:
+                with open(sections_file, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception as e:
+                log.error(
+                    f"sections.json okunamadı, mevcut kayıtlar kaybolabilir: {e}",
+                    exc_info=True,
+                )
+                return
 
         # Yeni section'ları ekle
         for node in parent_nodes:
@@ -202,31 +217,35 @@ class VectorStoreEngine:
                 "metadata": node.metadata,
             }
 
-        with open(sections_file, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False, indent=2)
+        try:
+            with open(sections_file, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            log.debug(f"sections.json güncellendi: {len(parent_nodes)} yeni section")
+        except Exception as e:
+            log.error(f"sections.json yazılamadı: {e}", exc_info=True)
 
     def add_nodes(self, nodes, file_name: str) -> tuple[int, int]:
         """
         Dönüş: (child_count, section_count)
         """
         if not nodes:
-            print("Uyarı: Eklenecek node bulunamadı.")
+            log.warning("Eklenecek node bulunamadı.")
             return 0, 0
 
         child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
         parent_nodes = [n for n in nodes if n.metadata.get("node_type") == "section"]
 
-        print(f"  {len(child_nodes)} child node embedding'leniyor...")
+        log.info(f"{len(child_nodes)} child node embedding'leniyor...")
         VectorStoreIndex(nodes=child_nodes, storage_context=self.storage_context)
 
         # Parent'ları JSON'a kaydet — embedding hesabı yok, salt metin deposu
         if parent_nodes:
-            print(f"  {len(parent_nodes)} section parent JSON'a kaydediliyor...")
+            log.debug(f"{len(parent_nodes)} section parent JSON'a kaydediliyor...")
             self._save_sections(parent_nodes, file_name)
 
-        print(
-            f"[SİSTEM] Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}'"
-            f" | {len(parent_nodes)} section → sections.json"
+        log.info(
+            f"Kayıt tamamlandı: {len(child_nodes)} child → '{self.collection_name}', "
+            f"{len(parent_nodes)} section → sections.json"
         )
         return len(child_nodes), len(parent_nodes)
 
@@ -237,7 +256,7 @@ class VectorStoreEngine:
         Settings.embed_model global state olduğu için onu da temizliyoruz,
         yoksa lokal referanslar silinse bile model bellekte kalır.
         """
-        print("[SİSTEM] Embedding modeli bellekten tahliye ediliyor...")
+        log.info("Embedding modeli bellekten tahliye ediliyor...")
         # 1. Önce Jina'nın kendi unload'unu çağır — ORT session ve tokenizer
         # açıkça None'lanıyor, destructor garantili çalışıyor.
         try:
@@ -245,7 +264,7 @@ class VectorStoreEngine:
             if jina is not None and hasattr(jina, "unload"):
                 jina.unload()
         except Exception as e:
-            print(f"[UYARI] Jina unload sırasında: {e}")
+            log.warning(f"Jina unload sırasında: {e}", exc_info=True)
 
         # 2. LlamaIndex global state'i temizle
         try:
@@ -253,7 +272,9 @@ class VectorStoreEngine:
         except Exception:
             pass
 
-        # 3. Diğer ağır referansları sil
+        # 3. Tüm ağır referansları sil — embed_model dahil olmak üzere tüm kardeşler
+        if hasattr(self, "embed_model"):
+            del self.embed_model
         if hasattr(self, "vector_store"):
             del self.vector_store
         if hasattr(self, "storage_context"):
@@ -266,12 +287,6 @@ class VectorStoreEngine:
         # Not: torch.cuda.empty_cache() çağrılmıyor — ChromaDB ve Jina ONNX
         # PyTorch GPU kullanmıyor. Jina'nın kendi unload'u zaten ORT
         # session'ı temizliyor.
-        import gc
-
         gc.collect()
 
-        print("[SİSTEM] Embedding belleği temizlendi.")
-
-
-if __name__ == "__main__":
-    print("Test için lütfen ingest.py dosyasını kullanınız.")
+        log.info("Embedding belleği temizlendi.")

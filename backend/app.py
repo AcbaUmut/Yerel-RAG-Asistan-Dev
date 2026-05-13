@@ -1,7 +1,12 @@
+import logging
 import os
 
 from core.db_manager import DBManager
+from core.logger import setup_logging
 from core.query_engine import QueryEngine
+
+setup_logging()
+log = logging.getLogger(__name__)
 
 
 class App:
@@ -18,6 +23,7 @@ class App:
     # ── Ana döngü ────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        log.info("Uygulama başlatıldı.")
         print("\n" + "=" * 60)
         print("  YEREL RAG ASİSTANI")
         print("=" * 60)
@@ -37,6 +43,7 @@ class App:
             choice = input("Seçim: ").strip()
 
             if choice == "0":
+                log.info("Uygulama kapatıldı.")
                 print("\nGörüşmek üzere.")
                 break
 
@@ -48,7 +55,10 @@ class App:
             try:
                 handler()
             except Exception as e:
-                # Beklenmedik hata menüyü çökertmesin
+                # Beklenmedik hata menüyü çökertmesin.
+                # exc_info=True — tam traceback dosyaya gider, terminalde kısa
+                # tepki mesajı görünür. Hangi menü seçiminde patladığı da kayıtta.
+                log.error(f"Handler hatası (seçim={choice}): {e}", exc_info=True)
                 print(f"\n[HATA] İşlem sırasında beklenmedik bir sorun oluştu: {e}")
                 print("Menüye dönülüyor.")
 
@@ -91,23 +101,39 @@ class App:
             print("[İPTAL] İşlenecek geçerli dosya kalmadı.")
             return
 
-        # Çakışma kontrolü — her dosya için ayrı karar
-        # Sade tutmak için: koleksiyonda zaten varsa, hepsi için tek soru sor
+        # ── Çakışan dosyaları tespit et ──
         existing = [
             os.path.basename(p)
             for p in valid
             if self.db.document_exists(os.path.basename(p))
         ]
 
-        on_conflict = "overwrite"  # default — çakışma yoksa fark etmez
-        if existing:
-            print(f"\nBu dosyalar koleksiyonda zaten var: {', '.join(existing)}")
-            if self._ask_yes_no("Üzerine yazılsın mı?"):
-                on_conflict = "overwrite"
-            else:
-                on_conflict = "skip"
+        # Her dosya için karar haritası — DBManager'a dict olarak geçecek.
+        # Çakışmayan dosyalar bu haritada görünmez; DBManager onları zaten
+        # direkt ekleme yoluna alır.
+        on_conflict: dict[str, str] = {}
 
-        # İşlemi başlat
+        if existing:
+            print(f"\nBu {len(existing)} dosya koleksiyonda zaten var:")
+            # Multi-select: kullanıcı üzerine yazılacakları seçer,
+            # seçilmeyenler otomatik olarak skip olur
+            to_overwrite = self._select_multiple_from_list(
+                existing,
+                "Üzerine yazılacakları seç (seçilmeyenler atlanacak)",
+            )
+            for fname in existing:
+                on_conflict[fname] = "overwrite" if fname in to_overwrite else "skip"
+
+            # Kullanıcıya seçimin özetini göster ki ne onayladığını bilsin
+            overwrite_count = sum(1 for v in on_conflict.values() if v == "overwrite")
+            skip_count = sum(1 for v in on_conflict.values() if v == "skip")
+            print(
+                f"\nKarar: {overwrite_count} dosya üzerine yazılacak, "
+                f"{skip_count} dosya atlanacak."
+            )
+
+        # İşlemi başlat — çakışma yoksa on_conflict boş dict,
+        # DBManager zaten "zaten var" durumuna düşmez
         result = self.db.add_documents(file_paths=valid, on_conflict=on_conflict)
 
         # Özet
@@ -297,8 +323,11 @@ class App:
 
         try:
             return shlex.split(raw)
-        except ValueError:
-            # Eşleşmeyen tırnak vs. — naif fallback
+        except ValueError as e:
+            # Eşleşmeyen tırnak vs. — naif fallback.
+            # Sessiz kalmamak için dosyaya not düşüyoruz, kullanıcı arayuzünü
+            # etkilemiyor (zaten path ayıklanmaya devam ediyor).
+            log.warning(f"shlex.split başarısız, naif split'e düşülüyor: {e}")
             return raw.split()
 
 
