@@ -20,7 +20,7 @@ class AppConfig:
     # ── Model dosya isimleri ─────────────────────────────────────────────
     LLM_MODEL_NAME: str = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
     VLM_MODEL_NAME: str = "ZwZ-4B-Q4_K_M.gguf"
-    VLM_MMPROJ_NAME: str = "mmproj-ZwZ-4B-Q8_0.gguf"
+    VLM_MMPROJ_NAME: str = "mmproj-ZwZ-4B-F16.gguf"
     RERANKER_MODEL_NAME: str = "bge-reranker-v2-m3-Q8_0.gguf"
     EMBED_MODEL_DIR_NAME: str = "jina-v5-nano"
 
@@ -41,12 +41,24 @@ class AppConfig:
     CHUNK_SIZE: int = 1100
     CHUNK_OVERLAP: int = 200
 
+    # ── Section/parent chunking ──────────────────────────────────────────
+    # Bu uzunluğun altındaki saf metin segmentleri komşularıyla birleştirilir,
+    # tek başına node olmaz.
+    MIN_SEGMENT_LEN: int = 150
+    # Çok kısa section'lar sonrakiyle birleştirilir.
+    MIN_SECTION_CHARS: int = 600
+    # ~1000 token; 3 section → ~3000 token bağlam, LLM için güvenli üst sınır.
+    MAX_SECTION_CHARS: int = 5000
+    # Boyut-tabanlı kesmede taşınan örtüşme.
+    SECTION_OVERLAP_CHARS: int = 200
+
     # ── Retriever ────────────────────────────────────────────────────────
+    RETRIEVER_K: int = 10
     RERANKER_TOP_N: int = 3
 
     # ── LLM ──────────────────────────────────────────────────────────────
     LLM_N_CTX: int = 8192
-    LLM_MAX_TOKENS: int = 1536
+    LLM_MAX_TOKENS: int = 2048
     LLM_TEMPERATURE: float = 0.1
 
     # ── VLM ──────────────────────────────────────────────────────────────

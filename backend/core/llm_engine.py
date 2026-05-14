@@ -21,17 +21,9 @@ class LLMEngine:
 
         self.llm = LlamaCpp(
             model_path=self.model_path,
-            temperature=(
-                AppConfig.LLM_TEMPERATURE
-                if AppConfig.LLM_TEMPERATURE is not None
-                else 0.1
-            ),
-            max_tokens=(
-                AppConfig.LLM_MAX_TOKENS
-                if AppConfig.LLM_MAX_TOKENS is not None
-                else 1024
-            ),
-            n_ctx=(AppConfig.LLM_N_CTX if AppConfig.LLM_N_CTX is not None else 8192),
+            temperature=AppConfig.LLM_TEMPERATURE,
+            max_tokens=AppConfig.LLM_MAX_TOKENS,
+            n_ctx=AppConfig.LLM_N_CTX,
             n_gpu_layers=-1,
             n_batch=512,
             repeat_penalty=1.1,
@@ -50,6 +42,7 @@ class LLMEngine:
         - Sadece bağlamdaki bilgileri kullan, dış bilgi (önceden eğitildiğin bilgiler) ekleme.
         - Bağlam içinde sentez ve çıkarım yapabilirsin: farklı parçaları birleştirebilir, bilgiyi yeniden ifade edebilir, eldeki bilgilerden mantıksal sonuçlar çıkarabilirsin.
         - Soruda geçen kelimelerin bağlamda birebir geçmesi gerekmez. Soruyla konu olarak yakın bilgi bağlamda varsa, ondan cevap üret.
+        - Soruda özetle vb. denilmedikçe özetleme.
 
         NE ZAMAN CEVAP ÜRETME:
         - Bağlam soruyla tamamen alakasızsa "Bu bilgiye sahip değilim." de.

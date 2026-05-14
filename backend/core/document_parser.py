@@ -22,10 +22,6 @@ log = logging.getLogger(__name__)
 # ayraçların kendisi de sonuç listesine dahil olur.
 VLM_BLOCK_PATTERN = re.compile(r"(<VLM_START\b[^>]*>.*?<VLM_END>)", re.DOTALL)
 
-# Bu uzunluğun altındaki saf metin segmentleri (başlıklar, tek satırlar vb.)
-# komşularıyla birleştirilir; tek başına node olmaz.
-MIN_SEGMENT_LEN = 150
-
 
 class DocumentParser:
     """
@@ -51,22 +47,14 @@ class DocumentParser:
 
     def __init__(
         self,
-        chunk_size: int = 1100,
-        chunk_overlap: int = 200,
         hf_threshold: float = 0.6,
     ):
         # DEBUG: Parser her ingestion için bir kez oluşur; ingestion_engine
         # zaten üst seviyede "Faz 1" + "Parse ediliyor" mesajlarını basıyor,
         # bu satırı INFO yapmak terminalde tekrar etkisi yaratır.
         log.debug("DocumentParser başlatılıyor.")
-        self.chunk_size = (
-            AppConfig.CHUNK_SIZE if AppConfig.CHUNK_SIZE is not None else chunk_size
-        )
-        self.chunk_overlap = (
-            AppConfig.CHUNK_OVERLAP
-            if AppConfig.CHUNK_OVERLAP is not None
-            else chunk_overlap
-        )
+        self.chunk_size = AppConfig.CHUNK_SIZE
+        self.chunk_overlap = AppConfig.CHUNK_OVERLAP
         self.hf_threshold = hf_threshold
 
         self.parser = SentenceSplitter(
@@ -420,7 +408,7 @@ class DocumentParser:
         parts = self._shift_trailing_slide_titles(parts, slide_titles)
 
         # Adım 4 — Küçük parçaları komşusuyla birleştir
-        return self._merge_small_parts(parts, MIN_SEGMENT_LEN)
+        return self._merge_small_parts(parts, AppConfig.MIN_SEGMENT_LEN)
 
     def _shift_trailing_slide_titles(
         self, parts: list[str], slide_titles: set
@@ -598,7 +586,10 @@ class DocumentParser:
         while i < len(typed):
             seg = typed[i]
 
-            if seg["type"] == "text" and len(seg["content"]) < MIN_SEGMENT_LEN:
+            if (
+                seg["type"] == "text"
+                and len(seg["content"]) < AppConfig.MIN_SEGMENT_LEN
+            ):
                 # Önce sonraki metin segmentiyle birleştirmeyi dene
                 if i + 1 < len(typed) and typed[i + 1]["type"] == "text":
                     typed[i + 1]["content"] = (
@@ -704,11 +695,10 @@ class DocumentParser:
             Aşama 3 — Parent TextNode üretimi, child'lara section metadata eklenmesi
         """
 
-        MIN_SECTION_CHARS = 600
-        MAX_SECTION_CHARS = (
-            5000  # ~1000 token; 3 section → ~3000 token bağlam → LLM için güvenli
-        )
-        SECTION_OVERLAP_CHARS = 200  # Boyut-tabanlı kesmede taşınan örtüşme
+        # Config'den lokal alias (method gövdesinde okunaklılık için)
+        MIN_SECTION_CHARS = AppConfig.MIN_SECTION_CHARS
+        MAX_SECTION_CHARS = AppConfig.MAX_SECTION_CHARS
+        SECTION_OVERLAP_CHARS = AppConfig.SECTION_OVERLAP_CHARS
 
         child_nodes = [n for n in nodes if n.metadata.get("node_type") != "section"]
 
@@ -945,7 +935,7 @@ class DocumentParser:
             doc=file_path,
             write_images=True,
             image_path=temp_img_dir,
-            dpi=235,
+            dpi=250,
             page_chunks=True,
         )
         log.debug(

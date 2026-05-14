@@ -38,7 +38,7 @@ class VLMEngine:
         self.llm = Llama(
             model_path=self.model_path,
             chat_handler=self.chat_handler,
-            n_ctx=(AppConfig.VLM_N_CTX if AppConfig.VLM_N_CTX is not None else 6144),
+            n_ctx=AppConfig.VLM_N_CTX,
             n_gpu_layers=-1,
             n_batch=2048,
             flash_attn_type=True,
@@ -137,16 +137,8 @@ class VLMEngine:
                         ],
                     },
                 ],
-                max_tokens=(
-                    AppConfig.VLM_MAX_TOKENS
-                    if AppConfig.VLM_MAX_TOKENS is not None
-                    else 1024
-                ),
-                temperature=(
-                    AppConfig.VLM_TEMPERATURE
-                    if AppConfig.VLM_TEMPERATURE is not None
-                    else 0.0
-                ),
+                max_tokens=AppConfig.VLM_MAX_TOKENS,
+                temperature=AppConfig.VLM_TEMPERATURE,
                 repeat_penalty=1.08,
                 stop=["[ANALİZ_BİTTİ]"],
             )

@@ -24,7 +24,6 @@ def setup_logging(
     Çağrı tekrar edilirse handler'lar duplicate olmasın diye önce
     mevcut handler'lar temizlenir.
     """
-    log_dir = log_dir
     os.makedirs(log_dir, exist_ok=True)
 
     root = logging.getLogger()

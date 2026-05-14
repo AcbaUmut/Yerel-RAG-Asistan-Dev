@@ -69,7 +69,9 @@ class RetrieverEngine:
             )
 
         # filter'lı base_retriever kalktı → Python tarafında filtreleme güvenilir
-        self.base_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 10})
+        self.base_retriever = self.vectorstore.as_retriever(
+            search_kwargs={"k": AppConfig.RETRIEVER_K}
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Komşu Node Genişletici
@@ -237,7 +239,7 @@ class RetrieverEngine:
         if file_name:
             filtered_retriever = self.vectorstore.as_retriever(
                 search_kwargs={
-                    "k": 10,
+                    "k": AppConfig.RETRIEVER_K,
                     "filter": {"file_name": file_name},
                 }
             )
