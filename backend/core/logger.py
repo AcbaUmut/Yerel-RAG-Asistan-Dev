@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 
@@ -61,3 +62,19 @@ def setup_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     # PIL her PNG'de IHDR/pHYs/IDAT chunk debug'ı basıyor — ingestion'da 50+ satır gürültü
     logging.getLogger("PIL").setLevel(logging.WARNING)
+
+    # ── Oturum ayırıcı ───────────────────────────────────────────────────────
+    # Yeni çalıştırma başladığında log dosyasına görsel bir sınır yazılır.
+    # Sadece dosyaya gider; konsola gerek yok çünkü terminal zaten yeni
+    # başlangıçta temiz görünüyor. file_handler.stream üzerinden direkt
+    # yazılır, logger üzerinden gitmediği için formatlayıcıdan etkilenmez.
+    separator = (
+        "\n"
+        + "=" * 80
+        + "\n"
+        + f"YENİ OTURUM — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        + "=" * 80
+        + "\n"
+    )
+    file_handler.stream.write(separator)
+    file_handler.flush()
