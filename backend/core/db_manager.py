@@ -4,6 +4,7 @@ import os
 import re
 
 import chromadb
+from core.config import AppConfig
 from core.ingestion_engine import IngestionEngine
 
 log = logging.getLogger(__name__)
@@ -22,22 +23,16 @@ class DBManager:
     """
 
     DEFAULT_COLLECTION = "default"
-    CATALOG_FILE = "documents.json"
-    SECTION_FILE = "sections.json"
-    # Tek dosya boyut sınırı — parse aşamasında VLM tüm sayfa görüntülerini
-    # RAM'e açtığı için peak memory dosya boyutuyla orantılı artıyor.
-    # 16 GB RAM ve eşzamanlı VLM yüklü senaryoda güvenli sınır.
-    MAX_FILE_SIZE_MB = 50
     # ChromaDB kuralı: 3-512 karakter, alfanumerik + . _ -, başı/sonu alfanumerik
     COLLECTION_NAME_PATTERN = re.compile(
         r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,48}[a-zA-Z0-9]$"
     )
 
-    def __init__(self, persist_dir: str = "./backend/data/database"):
+    def __init__(self, persist_dir: str = str(AppConfig.DATABASE_DIR)):
         self.persist_dir = persist_dir
-        self.catalog_path = os.path.join(persist_dir, self.CATALOG_FILE)
+        self.catalog_path = os.path.join(self.persist_dir, AppConfig.CATALOG_FILENAME)
+        self.sections_path = os.path.join(self.persist_dir, AppConfig.SECTIONS_FILENAME)
         self.active_collection: str = self.DEFAULT_COLLECTION
-        self.sections_path = os.path.join(persist_dir, self.SECTION_FILE)
 
         # Dizin yoksa oluştur — ChromaDB de aynı dizine yazacak
         os.makedirs(self.persist_dir, exist_ok=True)

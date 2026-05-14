@@ -3,9 +3,11 @@ import os
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+from core.config import AppConfig
+
 
 def setup_logging(
-    log_dir: str = "./backend/data/logs",
+    log_dir: str = str(AppConfig.LOGS_DIR),
     console_level: int = logging.INFO,
     file_level: int = logging.DEBUG,
 ) -> None:
@@ -22,6 +24,7 @@ def setup_logging(
     Çağrı tekrar edilirse handler'lar duplicate olmasın diye önce
     mevcut handler'lar temizlenir.
     """
+    log_dir = log_dir
     os.makedirs(log_dir, exist_ok=True)
 
     root = logging.getLogger()
@@ -46,7 +49,7 @@ def setup_logging(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     file_handler = RotatingFileHandler(
-        filename=os.path.join(log_dir, "app.log"),
+        filename=os.path.join(log_dir, AppConfig.LOG_FILENAME),
         maxBytes=5 * 1024 * 1024,  # 5 MB
         backupCount=5,  # eski log dosyalarını sakla: app.log.1, .2, ...
         encoding="utf-8",

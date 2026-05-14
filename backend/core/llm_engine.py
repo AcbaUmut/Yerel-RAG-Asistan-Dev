@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 class LLMEngine:
     def __init__(self):
-        self.model_path = f"./backend/models/{AppConfig.LLM_MODEL_NAME}"
+        self.model_path = str(AppConfig.LLM_MODEL_PATH)
 
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Model dosyası bulunamadı: {self.model_path}")

@@ -1,6 +1,7 @@
 import logging
 import os
 
+from core.config import AppConfig
 from core.db_manager import DBManager
 from core.logger import setup_logging
 from core.query_engine import QueryEngine
@@ -98,7 +99,7 @@ class App:
                 missing.append(p)
                 continue
             size_mb = os.path.getsize(p) / (1024 * 1024)
-            if size_mb > self.db.MAX_FILE_SIZE_MB:
+            if size_mb > AppConfig.MAX_FILE_SIZE_MB:
                 too_big.append((p, size_mb))
                 continue
             valid.append(p)
@@ -111,11 +112,11 @@ class App:
             # Boyut limitini aşan dosya atlanıyor — dosyada iz bırakalım
             log.warning(
                 f"Boyut limiti aşıldı, atlandı: {p} "
-                f"({size_mb:.1f} MB > {self.db.MAX_FILE_SIZE_MB} MB)"
+                f"({size_mb:.1f} MB > {AppConfig.MAX_FILE_SIZE_MB} MB)"
             )
             print(
                 f"[ATLA] Dosya çok büyük "
-                f"({size_mb:.1f} MB > {self.db.MAX_FILE_SIZE_MB} MB): {p}"
+                f"({size_mb:.1f} MB > {AppConfig.MAX_FILE_SIZE_MB} MB): {p}"
             )
 
         if not valid:

@@ -1,22 +1,55 @@
+from pathlib import Path
+
+
 class AppConfig:
-    LLM_MODEL_NAME = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
-    VLM_MODEL_NAME = "ZwZ-4B-Q4_K_M.gguf"
-    VLM_MMPROJ_NAME = "mmproj-ZwZ-4B-Q8_0.gguf"
-    # EMBED_MODEL_NAME = "jina-v5-nano"
-    # RERANKER_MODEL_NAME = "bge-reranker-v2-m3"
-    RERANKER_MODEL_NAME = "bge-reranker-v2-m3-Q8_0.gguf"
-    # CPU 0, GPU -1
-    # RERANKER_MODE = 0
+    # ── Dizinler ─────────────────────────────────────────────────────────
+    # backend/core/config.py → iki yukarı = proje kökü
+    BASE_DIR: Path = Path(__file__).resolve().parents[2]
+    BACKEND_DIR: Path = BASE_DIR / "backend"
+    MODELS_DIR: Path = BACKEND_DIR / "models"
+    DATA_DIR: Path = BACKEND_DIR / "data"
+    DATABASE_DIR: Path = DATA_DIR / "database"
+    LOGS_DIR: Path = DATA_DIR / "logs"
+    TEMP_IMAGES_DIR: Path = DATA_DIR / "temp_images"
 
-    CHUNK_SIZE = 1100
-    CHUNK_OVERLAP = 200
+    # ── Sabit dosya isimleri ─────────────────────────────────────────────
+    CATALOG_FILENAME: str = "documents.json"
+    SECTIONS_FILENAME: str = "sections.json"
+    LOG_FILENAME: str = "app.log"
 
-    RERANKER_TOP_N = 3
+    # ── Model dosya isimleri ─────────────────────────────────────────────
+    LLM_MODEL_NAME: str = "Turkish-Gemma-9b-T1-Q4_K_M.gguf"
+    VLM_MODEL_NAME: str = "ZwZ-4B-Q4_K_M.gguf"
+    VLM_MMPROJ_NAME: str = "mmproj-ZwZ-4B-Q8_0.gguf"
+    RERANKER_MODEL_NAME: str = "bge-reranker-v2-m3-Q8_0.gguf"
+    EMBED_MODEL_DIR_NAME: str = "jina-v5-nano"
 
-    LLM_N_CTX = 8192
-    LLM_MAX_TOKENS = 1536
-    LLM_TEMPERATURE = 0.1
+    # ── Model tam yolları (sabit konum, override gereksiz) ───────────────
+    LLM_MODEL_PATH: Path = MODELS_DIR / LLM_MODEL_NAME
+    VLM_MODEL_PATH: Path = MODELS_DIR / VLM_MODEL_NAME
+    VLM_MMPROJ_PATH: Path = MODELS_DIR / VLM_MMPROJ_NAME
+    RERANKER_MODEL_PATH: Path = MODELS_DIR / RERANKER_MODEL_NAME
+    EMBED_MODEL_DIR: Path = MODELS_DIR / EMBED_MODEL_DIR_NAME
 
-    VLM_N_CTX = 6144
-    VLM_MAX_TOKENS = 1536
-    VLM_TEMPERATURE = 0.0
+    # ── Ingestion sınırları ──────────────────────────────────────────────
+    # Parse aşamasında VLM tüm sayfa görüntülerini RAM'e açtığı için peak
+    # memory dosya boyutuyla orantılı artıyor. 16 GB RAM ve eşzamanlı VLM
+    # yüklü senaryoda güvenli sınır.
+    MAX_FILE_SIZE_MB: int = 50
+
+    # ── Chunk parametreleri ──────────────────────────────────────────────
+    CHUNK_SIZE: int = 1100
+    CHUNK_OVERLAP: int = 200
+
+    # ── Retriever ────────────────────────────────────────────────────────
+    RERANKER_TOP_N: int = 3
+
+    # ── LLM ──────────────────────────────────────────────────────────────
+    LLM_N_CTX: int = 8192
+    LLM_MAX_TOKENS: int = 1536
+    LLM_TEMPERATURE: float = 0.1
+
+    # ── VLM ──────────────────────────────────────────────────────────────
+    VLM_N_CTX: int = 6144
+    VLM_MAX_TOKENS: int = 1536
+    VLM_TEMPERATURE: float = 0.0

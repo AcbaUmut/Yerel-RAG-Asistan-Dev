@@ -17,7 +17,7 @@ class RetrieverEngine:
     def __init__(
         self,
         collection_name: str = "default",
-        persist_dir: str = "./backend/data/database",
+        persist_dir: str = str(AppConfig.DATABASE_DIR),
     ):
         self.persist_dir = persist_dir
         self.collection_name = collection_name
@@ -35,7 +35,7 @@ class RetrieverEngine:
 
         reranker_start = time.time()
         self.reranker = LlamaEmbedding(
-            model_path=f"./backend/models/{AppConfig.RERANKER_MODEL_NAME}",
+            model_path=str(AppConfig.RERANKER_MODEL_PATH),
             pooling_type=LLAMA_POOLING_TYPE_RANK,
             n_gpu_layers=0,
             n_ctx=0,
@@ -51,7 +51,7 @@ class RetrieverEngine:
             collection_name=self.collection_name,
         )
 
-        sections_file = os.path.join(self.persist_dir, "sections.json")
+        sections_file = os.path.join(self.persist_dir, AppConfig.SECTIONS_FILENAME)
         self.sections_map: dict = {}
         if os.path.exists(sections_file):
             try:

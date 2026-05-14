@@ -22,8 +22,8 @@ _VLM_MAX_PIXELS: int = 1_310_720
 
 class VLMEngine:
     def __init__(self) -> None:
-        self.model_path = f"./backend/models/{AppConfig.VLM_MODEL_NAME}"
-        self.mmproj_path = f"./backend/models/{AppConfig.VLM_MMPROJ_NAME}"
+        self.model_path = str(AppConfig.VLM_MODEL_PATH)
+        self.mmproj_path = str(AppConfig.VLM_MMPROJ_PATH)
 
         if not os.path.exists(self.model_path) or not os.path.exists(self.mmproj_path):
             raise FileNotFoundError(

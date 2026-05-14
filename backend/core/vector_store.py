@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import chromadb
 import numpy as np
+from core.config import AppConfig
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -36,7 +37,7 @@ class JinaEmbeddings(BaseEmbedding):
             raise ValueError(f"device 'cuda' veya 'cpu' olmalı, aldı: {device}")
 
         self._device = device
-        self._model_dir = "./backend/models/jina-v5-nano"
+        self._model_dir = str(AppConfig.EMBED_MODEL_DIR)
         self._tokenizer: Optional[AutoTokenizer] = None
         self._model: Optional[ORTModelForFeatureExtraction] = None
         self._load()
@@ -158,7 +159,7 @@ class JinaEmbeddings(BaseEmbedding):
 class VectorStoreEngine:
     def __init__(
         self,
-        persist_dir: str = "./backend/data/database",
+        persist_dir: str = str(AppConfig.DATABASE_DIR),
         collection_name: str = "default",
         embed_device: str = "cuda",
     ):

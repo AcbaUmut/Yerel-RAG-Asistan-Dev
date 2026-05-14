@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime
 
+from core.config import AppConfig
 from core.document_parser import DocumentParser
 from core.vector_store import VectorStoreEngine
 from core.vlm_engine import VLMEngine
@@ -27,7 +28,7 @@ class IngestionEngine:
         Sonunda başarılı/başarısız özet raporu döndürülür.
     """
 
-    def __init__(self, persist_dir: str = "./backend/data/database"):
+    def __init__(self, persist_dir: str = str(AppConfig.DATABASE_DIR)):
         self.persist_dir = persist_dir
 
     def run(

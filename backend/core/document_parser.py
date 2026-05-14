@@ -935,7 +935,7 @@ class DocumentParser:
         log.info(f"Parse başlatıldı: {base_name}")
 
         name_without_ext = os.path.splitext(base_name)[0]
-        temp_img_dir = os.path.join("backend", "data", "temp_images", name_without_ext)
+        temp_img_dir = str(AppConfig.TEMP_IMAGES_DIR / name_without_ext)
         os.makedirs(temp_img_dir, exist_ok=True)
 
         # ── Adım 1 ───────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ class QueryEngine:
     def __init__(
         self,
         collection_name: str = "default",
-        persist_dir: str = "./backend/data/database",
+        persist_dir: str = str(AppConfig.DATABASE_DIR),
     ):
         self.collection_name = collection_name
         self.persist_dir = persist_dir
