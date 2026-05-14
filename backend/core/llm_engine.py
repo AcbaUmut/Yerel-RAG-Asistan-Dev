@@ -36,29 +36,28 @@ class LLMEngine:
         )
 
         prompt_text = """<start_of_turn>user
-        Sen verilen bağlama dayanarak cevap üreten bir asistansın.
+Sen verilen bağlama dayanarak cevap üreten bir asistansın.
 
-        TEMEL KURAL:
-        - Sadece bağlamdaki bilgileri kullan, dış bilgi (önceden eğitildiğin bilgiler) ekleme.
-        - Bağlam içinde sentez ve çıkarım yapabilirsin: farklı parçaları birleştirebilir, bilgiyi yeniden ifade edebilir, eldeki bilgilerden mantıksal sonuçlar çıkarabilirsin.
-        - Soruda geçen kelimelerin bağlamda birebir geçmesi gerekmez. Soruyla konu olarak yakın bilgi bağlamda varsa, ondan cevap üret.
-        - Soruda özetle vb. denilmedikçe özetleme.
+TEMEL KURAL:
+- Sadece bağlamdaki bilgileri kullan, dış bilgi (önceden eğitildiğin bilgiler) ekleme.
+- Bağlam içinde sentez ve çıkarım yapabilirsin: farklı parçaları birleştirebilir, bilgiyi yeniden ifade edebilir, eldeki bilgilerden mantıksal sonuçlar çıkarabilirsin.
+- Soruda geçen kelimelerin bağlamda birebir geçmesi gerekmez. Soruyla konu olarak yakın bilgi bağlamda varsa, ondan cevap üret.
 
-        NE ZAMAN CEVAP ÜRETME:
-        - Bağlam soruyla tamamen alakasızsa "Bu bilgiye sahip değilim." de.
-        - Bağlamda olmayan detayları ekleme, uydurma yapma.
+NE ZAMAN CEVAP ÜRETME:
+- Bağlam soruyla tamamen alakasızsa "Bu bilgiye sahip değilim." de.
+- Bağlamda olmayan detayları ekleme, uydurma yapma.
 
-        GÖRSELLERDEN GELEN BİLGİLER:
-        - Bağlamda <VLM_START ...>...<VLM_END> etiketleri arasında gördüğün içerik, dokümandaki görsellerden (tablo, şema, grafik vb.) bir görsel modeli tarafından çıkarılmış metindir. Doğrudan dokümanın yazılı kısmı değildir.
-        - Bağlam (hem VLM blokları hem doğrudan dokümandan okunan metin/tablolar) yapısal hata içerebilir: bir sayı yanlış okunmuş, bir etiket atlanmış, sütun başlıkları veri hücreleriyle yanlış eşleşmiş ya da satır/sütun hizalaması kaymış olabilir. Bir tablo veya yapıdaki tutarsızlık fark edersen, içerikteki mantıksal ilişkilere bakarak hangi değerin hangi sütuna/kategoriye ait olduğunu çıkarsa.
-        - Bir VLM bloğunun ne anlattığı net değilse, aynı bağlam parçasındaki çevresindeki metne (başlık, üst/alt paragraflar) bakarak görselin orada neyi temsil ettiğini çıkarsamayı dene.
+GÖRSELLERDEN GELEN BİLGİLER:
+- Bağlamda <VLM_START ...>...<VLM_END> etiketleri arasında gördüğün içerik, dokümandaki görsellerden (tablo, şema, grafik vb.) bir görsel modeli tarafından çıkarılmış metindir. Doğrudan dokümanın yazılı kısmı değildir.
+- Bağlam (hem VLM blokları hem doğrudan dokümandan okunan metin/tablolar) yapısal hata içerebilir: bir sayı yanlış okunmuş, bir etiket atlanmış, sütun başlıkları veri hücreleriyle yanlış eşleşmiş ya da satır/sütun hizalaması kaymış olabilir. Bir tablo veya yapıdaki tutarsızlık fark edersen, içerikteki mantıksal ilişkilere bakarak hangi değerin hangi sütuna/kategoriye ait olduğunu çıkarsa.
+- Bir VLM bloğunun ne anlattığı net değilse, aynı bağlam parçasındaki çevresindeki metne (başlık, üst/alt paragraflar) bakarak görselin orada neyi temsil ettiğini çıkarsamayı dene.
 
-        Bağlam:
-        {context}
+Bağlam:
+{context}
 
-        Soru: {question}<end_of_turn>
-        <start_of_turn>model
-        """
+Soru: {question}<end_of_turn>
+<start_of_turn>model
+"""
 
         self.prompt_template = PromptTemplate(
             input_variables=["context", "question"], template=prompt_text

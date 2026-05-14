@@ -41,7 +41,7 @@ class VLMEngine:
             n_ctx=AppConfig.VLM_N_CTX,
             n_gpu_layers=-1,
             n_batch=2048,
-            flash_attn_type=True,
+            flash_attn_type=1,
             swa_full=True,
             type_k=8,
             type_v=8,
