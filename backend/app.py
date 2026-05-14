@@ -89,13 +89,34 @@ class App:
             print("[İPTAL] Geçerli yol yok.")
             return
 
-        # Mevcut olmayanları erken ayıkla, kullanıcıya bildir
-        valid, missing = [], []
+        # Mevcut olmayanları ve boyut sınırını aşanları erken ayıkla
+        valid: list[str] = []
+        missing: list[str] = []
+        too_big: list[tuple[str, float]] = []  # (path, size_mb)
         for p in paths:
-            (valid if os.path.exists(p) else missing).append(p)
+            if not os.path.exists(p):
+                missing.append(p)
+                continue
+            size_mb = os.path.getsize(p) / (1024 * 1024)
+            if size_mb > self.db.MAX_FILE_SIZE_MB:
+                too_big.append((p, size_mb))
+                continue
+            valid.append(p)
 
         for m in missing:
+            log.warning(f"Dosya bulunamadı, atlandı: {m}")
             print(f"[ATLA] Dosya bulunamadı: {m}")
+
+        for p, size_mb in too_big:
+            # Boyut limitini aşan dosya atlanıyor — dosyada iz bırakalım
+            log.warning(
+                f"Boyut limiti aşıldı, atlandı: {p} "
+                f"({size_mb:.1f} MB > {self.db.MAX_FILE_SIZE_MB} MB)"
+            )
+            print(
+                f"[ATLA] Dosya çok büyük "
+                f"({size_mb:.1f} MB > {self.db.MAX_FILE_SIZE_MB} MB): {p}"
+            )
 
         if not valid:
             print("[İPTAL] İşlenecek geçerli dosya kalmadı.")
