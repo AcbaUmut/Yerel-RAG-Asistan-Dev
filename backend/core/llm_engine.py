@@ -76,6 +76,25 @@ Soru: {question}<end_of_turn>
             log.error(f"LLM yanıt üretirken hata oluştu: {e}", exc_info=True)
             return f"LLM Yanıt Üretirken Hata Oluştu: {str(e)}"
 
+    def generate_answer_stream(self, context: str, question: str):
+        """
+        Cevabı token token üreten generator versiyon.
+
+        LangChain'in chain.stream() metodu generator döndürür; her bir
+        parça (genelde 1-2 token) ortaya çıkar çıkmaz yield ile dışarı
+        aktarılır. Çağıran taraf for döngüsü ile parçaları toplar veya
+        HTTP stream'e yazar.
+        """
+        try:
+            for chunk in self.chain.stream({"context": context, "question": question}):
+                # chunk her zaman string — StrOutputParser ile çıktı parse edildi.
+                # Boş chunk olabilir, frontend'e yollamak anlamsız.
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            log.error(f"LLM stream sırasında hata: {e}", exc_info=True)
+            yield f"\n\n[HATA] LLM yanıt üretirken sorun oluştu: {e}"
+
     def unload(self):
         """
         LLM'i VRAM'den serbest bırakır.

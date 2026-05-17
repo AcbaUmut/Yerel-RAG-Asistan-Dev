@@ -95,3 +95,63 @@ class QueryEngine:
 
         log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")
         return answer
+
+    def run_stream(self, question: str, file_name: str):
+        """
+        Sorguyu çalıştırır, cevabı token token yield eder.
+
+        Akış run() ile aynı — retriever çek, LLM çağır — ama LLM
+        aşamasında stream döner. Modellerin yüklenme/boşaltma sırası
+        değişmez, sadece cevabı tek seferde değil parça parça veriyoruz.
+        """
+        log.info(
+            f"Streaming sorgu — koleksiyon: '{self.collection_name}', "
+            f"doküman: '{file_name}', soru: {question!r}"
+        )
+        start_time = time.time()
+
+        # ── 1. Retriever ──
+        log.info("Retriever yükleniyor...")
+        retriever = RetrieverEngine(
+            collection_name=self.collection_name,
+            persist_dir=self.persist_dir,
+        )
+
+        # ── 2. Bağlam çek ──
+        log.info("Veritabanında arama + reranker çalışıyor...")
+        context_text = retriever.get_relevant_context(
+            query=question,
+            top_n=AppConfig.RERANKER_TOP_N,
+            threshold=0.0,
+            file_name=file_name,
+        )
+
+        retriever.unload()
+        del retriever
+        gc.collect()
+
+        if not context_text:
+            log.warning("Bağlam boş — LLM çağrılmadan dönülüyor.")
+            yield "Bu doküman için sorguya uygun bir bağlam bulunamadı."
+            return
+
+        # ── 3. LLM ──
+        log.info("LLM yükleniyor ve cevap akıtılıyor...")
+        llm = LLMEngine()
+
+        gen_start = time.time()
+        try:
+            # generate_answer_stream her chunk'ı yield ediyor;
+            # biz de aynısını yukarı aktarıyoruz.
+            for chunk in llm.generate_answer_stream(
+                context=context_text, question=question
+            ):
+                yield chunk
+        finally:
+            # Stream bitse de yarıda kesilse de LLM mutlaka temizlensin.
+            # Frontend bağlantıyı koparırsa GeneratorExit fırlar, finally yine çalışır.
+            log.info(f"LLM cevabı bitti ({time.time() - gen_start:.2f} sn).")
+            llm.unload()
+            del llm
+            gc.collect()
+            log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")

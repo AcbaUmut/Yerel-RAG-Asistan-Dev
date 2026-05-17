@@ -8,9 +8,13 @@ llama-index-vector-stores-chroma
 numpy
 pymupdf4llm
 transformers
-optimum[onnxruntime]
-torch
+# pip install --upgrade --force-reinstall onnxruntime-gpu
+# CUDA 12.8 sürümü gerekli, normal pip kurulumu CPU çekiyor.
+# Kurulum: pip install --no-deps torch torchvision --index-url https://download.pytorch.org/whl/cu128
 sentence-transformers
 langchain-huggingface
 ninja
 Pillow
+fastapi
+uvicorn[standard]
+python-multipart
