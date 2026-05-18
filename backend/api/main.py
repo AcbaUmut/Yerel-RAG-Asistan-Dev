@@ -9,6 +9,7 @@ from core.db_manager import DBManager
 from core.logger import setup_logging
 from core.query_engine import QueryEngine
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -20,10 +21,24 @@ log = logging.getLogger(__name__)
 # FastAPI uygulaması — sunucunun "kalbi"
 app = FastAPI(title="Yerel RAG Asistani API")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # geliştirmede herkese açık
+    allow_credentials=True,
+    allow_methods=["*"],  # GET, POST, DELETE hepsi
+    allow_headers=["*"],
+)
+
 # DBManager tek bir tane oluşturulur, sunucu açık olduğu
 # sürece yaşar. Terminal'deki App.__init__ içindeki self.db
 # ne işe yarıyorsa burada da aynı görev.
 db = DBManager()
+
+
+@app.get("/health")
+def health():
+    """Backend ayakta mı sorusuna cevap. Tauri startup'ında ping için."""
+    return {"status": "ok"}
 
 
 @app.get("/collections")

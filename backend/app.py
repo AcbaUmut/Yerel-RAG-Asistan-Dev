@@ -262,7 +262,10 @@ class App:
             return
 
         engine = QueryEngine(collection_name=self.db.active_collection)
-        engine.run(question=question, file_name=selected)
+        answer = engine.run(question=question, file_name=selected)
+        print("=" * 60)
+        print(answer)
+        print("=" * 60)
 
     # ── Yardımcılar ──────────────────────────────────────────────────────────
 

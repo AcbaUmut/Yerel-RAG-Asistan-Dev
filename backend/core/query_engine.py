@@ -82,11 +82,7 @@ class QueryEngine:
 
         gen_start = time.time()
         answer = llm.generate_answer(context=context_text, question=question)
-        # Cevabın kendisi UI çıktısı — print olarak kullanıcıya gösterilir.
-        # Logger formatı (köşeli parantezler vs.) burada uygunsuz olur.
-        print("=" * 60)
-        print(answer)
-        print("=" * 60)
+
         log.info(f"LLM cevabı üretildi ({time.time() - gen_start:.2f} sn).")
 
         llm.unload()
