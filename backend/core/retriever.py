@@ -128,12 +128,27 @@ class RetrieverEngine:
         if not to_fetch:
             return sorted(docs, key=lambda d: int(d.metadata.get("node_index", 9999)))
 
-        # ChromaDB'den komşuları çek
-        # node_index integer metadata olarak saklandığı için $in operatörü çalışır
+        # ChromaDB'den komşuları çek — sadece aynı dosyadaki node'lardan
+        # Filtre yoksa farklı dosyalardan node sızar (bkz. bug raporu).
+        file_names = {
+            doc.metadata.get("file_name")
+            for doc in docs
+            if doc.metadata.get("file_name")
+        }
+
+        where_clause: dict = {"node_index": {"$in": to_fetch}}
+        if file_names:
+            where_clause = {
+                "$and": [
+                    {"node_index": {"$in": to_fetch}},
+                    {"file_name": {"$in": list(file_names)}},
+                ]
+            }
+
         extra_docs: list[LCDocument] = []
         try:
             results = self.vectorstore._collection.get(
-                where={"node_index": {"$in": to_fetch}},
+                where=where_clause,
                 include=["documents", "metadatas"],
             )
             if results and results.get("documents"):
@@ -161,24 +176,24 @@ class RetrieverEngine:
 
     def _expand_with_section_context(self, docs: list) -> list:
         """
-        Retriever'ın döndürdüğü child node'lar için ChromaDB'den parent
-        section node'larını getirir.
+        Child node'ları section parent'larına genişletir.
 
-        Strateji:
-            - section node doğrudan geliyorsa (filter kaçmışsa) direkt ekle
-            - child node ise section_id = o node'un ChromaDB ID'si olduğu
-              için get(ids=[section_id]) ile direkt çek — $and gerekmez
-            - Parent bulunamazsa orijinal child + komşularına düş (içerik asla kaybolmaz)
+        Aynı section'dan birden fazla child gelirse parent yalnızca BİR kez
+        eklenir; sonraki child'lar atlanır çünkü parent metni o child'ları
+        zaten kapsar. Yalnızca section_id yoksa veya parent JSON'da kayıpsa
+        komşu fallback'e düşülür.
         """
         seen_section_ids: set[str] = set()
         result_docs: list[LCDocument] = []
 
         for doc in docs:
-            meta = doc.metadata
-            section_id = meta.get("section_id")
+            section_id = doc.metadata.get("section_id")
 
-            # YENİ — dict lookup, anlık:
-            if section_id and section_id not in seen_section_ids:
+            # Aynı section daha önce eklendiyse atla — parent o child'ı içeriyor
+            if section_id and section_id in seen_section_ids:
+                continue
+
+            if section_id:
                 seen_section_ids.add(section_id)
                 section_data = self.sections_map.get(section_id)
                 if section_data:
@@ -189,13 +204,12 @@ class RetrieverEngine:
                         )
                     )
                     continue
-                else:
-                    log.warning(
-                        f"Section bulunamadı (id={section_id[:8]}...): "
-                        "sections.json'da yok"
-                    )
+                log.warning(
+                    f"Section bulunamadı (id={section_id[:8]}...): "
+                    "sections.json'da yok, komşu fallback'ine düşülüyor."
+                )
 
-            # ── Yol 2: Fallback — eski komşu genişletme, içerik asla kaybolmasın ──
+            # section_id yok ya da parent kayıp — fallback
             result_docs.extend(self._expand_with_neighbors([doc]))
 
         # node_index'e göre sırala, section_id'ye göre tekilleştir
