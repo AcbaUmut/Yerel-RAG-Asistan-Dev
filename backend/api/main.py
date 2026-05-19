@@ -37,8 +37,12 @@ db = DBManager()
 
 @app.get("/health")
 def health():
-    """Backend ayakta mı sorusuna cevap. Tauri startup'ında ping için."""
-    return {"status": "ok"}
+    """Backend ayakta mı sorusuna cevap. Tauri startup'ında ping için.
+    Yan bilgi: dosya boyut limiti (MB) — frontend ön kontrol için."""
+    return {
+        "status": "ok",
+        "max_file_size_mb": AppConfig.MAX_FILE_SIZE_MB,
+    }
 
 
 @app.get("/collections")

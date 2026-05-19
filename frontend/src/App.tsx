@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./App.css";
 
 type Doc = {
@@ -12,6 +14,74 @@ type Message = {
   role: "user" | "assistant";
   content: string;
 };
+
+type ToastMsg = {
+  type: "success" | "error" | "info";
+  message: string;
+};
+
+// <think>...</think> bloklarını metin parçalarından ayırır.
+// Akış sırasında blok kapanmamış olabilir; o zaman 'complete: false' işaretlenir.
+function parseThinkBlocks(content: string) {
+  const regex = /<think>([\s\S]*?)(?:<\/think>|$)/g;
+  const parts: Array<{
+    type: "think" | "text";
+    content: string;
+    complete?: boolean;
+  }> = [];
+  let lastEnd = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(content)) !== null) {
+    if (match.index > lastEnd) {
+      parts.push({
+        type: "text",
+        content: content.slice(lastEnd, match.index),
+      });
+    }
+    const fullMatch = content.slice(match.index, match.index + match[0].length);
+    parts.push({
+      type: "think",
+      content: match[1],
+      complete: fullMatch.endsWith("</think>"),
+    });
+    lastEnd = match.index + match[0].length;
+  }
+  if (lastEnd < content.length) {
+    parts.push({ type: "text", content: content.slice(lastEnd) });
+  }
+  return parts;
+}
+
+// Asistan mesajını markdown olarak render eder; <think> bloklarını
+// açılır-kapanır olarak gösterir.
+function AssistantMessage({ content }: { content: string }) {
+  const parts = parseThinkBlocks(content);
+  return (
+    <div className="space-y-2">
+      {parts.map((part, i) => {
+        if (part.type === "think") {
+          return (
+            <details key={i} className="text-xs text-gray-500">
+              <summary className="cursor-pointer hover:text-gray-700 select-none">
+                {part.complete ? "Düşünme sürecini gör" : "Düşünüyor..."}
+              </summary>
+              <div className="mt-1 pl-3 border-l-2 border-gray-300 whitespace-pre-wrap text-gray-600">
+                {part.content.trim()}
+              </div>
+            </details>
+          );
+        }
+        return (
+          <div key={i} className="prose prose-sm max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {part.content}
+            </ReactMarkdown>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function App() {
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -29,22 +99,32 @@ function App() {
 
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [conflicts, setConflicts] = useState<string[]>([]);
-  const [decisions, setDecisions] = useState<Record<string, "overwrite" | "skip">>({});
+  const [decisions, setDecisions] = useState<
+    Record<string, "overwrite" | "skip">
+  >({});
 
   const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
 
   const [allCollections, setAllCollections] = useState<string[]>([]);
   const [showCollectionMenu, setShowCollectionMenu] = useState<boolean>(false);
+  const collectionMenuRef = useRef<HTMLDivElement>(null);
+
+  const [maxFileSizeMb, setMaxFileSizeMb] = useState<number>(50);
+  const [toast, setToast] = useState<ToastMsg | null>(null);
 
   useEffect(() => {
     Promise.all([
       fetch("http://localhost:8000/documents").then((r) => r.json()),
       fetch("http://localhost:8000/collections").then((r) => r.json()),
+      fetch("http://localhost:8000/health").then((r) => r.json()),
     ])
-      .then(([docsData, colData]) => {
+      .then(([docsData, colData, healthData]) => {
         setDocs(docsData.documents);
         setCollection(docsData.collection);
         setAllCollections(colData.all);
+        if (typeof healthData.max_file_size_mb === "number") {
+          setMaxFileSizeMb(healthData.max_file_size_mb);
+        }
         setLoading(false);
       })
       .catch((err) => {
@@ -52,6 +132,28 @@ function App() {
         setLoading(false);
       });
   }, []);
+
+  // Dropdown dışına tıklayınca kapansın
+  useEffect(() => {
+    if (!showCollectionMenu) return;
+    function onMouseDown(e: MouseEvent) {
+      if (
+        collectionMenuRef.current &&
+        !collectionMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowCollectionMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [showCollectionMenu]);
+
+  // Toast'u 4 saniye sonra otomatik kapat
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   async function handleSend() {
     if (!input.trim() || !selectedDoc || isStreaming) return;
@@ -144,7 +246,9 @@ function App() {
         await refreshDocs();
       }
     } catch (err) {
-      alert(`Silme hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`);
+      alert(
+        `Silme hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`,
+      );
     } finally {
       setDeletingDoc(null);
     }
@@ -159,7 +263,7 @@ function App() {
     try {
       const res = await fetch(
         `http://localhost:8000/collections/${name}/activate`,
-        { method: "POST" }
+        { method: "POST" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -174,7 +278,7 @@ function App() {
       setShowCollectionMenu(false);
     } catch (err) {
       alert(
-        `Koleksiyon değiştirilemedi: ${err instanceof Error ? err.message : "bilinmeyen"}`
+        `Koleksiyon değiştirilemedi: ${err instanceof Error ? err.message : "bilinmeyen"}`,
       );
     }
   }
@@ -200,20 +304,23 @@ function App() {
       setShowCollectionMenu(false);
     } catch (err) {
       alert(
-        `Koleksiyon oluşturulamadı: ${err instanceof Error ? err.message : "bilinmeyen"}`
+        `Koleksiyon oluşturulamadı: ${err instanceof Error ? err.message : "bilinmeyen"}`,
       );
     }
   }
 
   async function handleDeleteCollection(name: string) {
-    if (!confirm(`'${name}' koleksiyonu ve içindeki tüm dokümanlar silinecek. Emin misin?`))
+    if (
+      !confirm(
+        `'${name}' koleksiyonu ve içindeki tüm dokümanlar silinecek. Emin misin?`,
+      )
+    )
       return;
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/collections/${name}`,
-        { method: "DELETE" }
-      );
+      const res = await fetch(`http://localhost:8000/collections/${name}`, {
+        method: "DELETE",
+      });
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
@@ -235,7 +342,7 @@ function App() {
       }
     } catch (err) {
       alert(
-        `Koleksiyon silinemedi: ${err instanceof Error ? err.message : "bilinmeyen"}`
+        `Koleksiyon silinemedi: ${err instanceof Error ? err.message : "bilinmeyen"}`,
       );
     }
   }
@@ -243,7 +350,32 @@ function App() {
   async function handleUpload(files: FileList) {
     if (files.length === 0) return;
 
-    const fileArr = Array.from(files);
+    // Boyut ön kontrolü — backend de yapacak ama kullanıcıyı erken uyaralım
+    const allFiles = Array.from(files);
+    const tooBig: string[] = [];
+    const okFiles: File[] = [];
+    for (const f of allFiles) {
+      const sizeMb = f.size / (1024 * 1024);
+      if (sizeMb > maxFileSizeMb) {
+        tooBig.push(`${f.name} (${sizeMb.toFixed(1)} MB)`);
+      } else {
+        okFiles.push(f);
+      }
+    }
+
+    if (tooBig.length > 0) {
+      setToast({
+        type: "error",
+        message: `Boyut limiti aşıldı (${maxFileSizeMb} MB): ${tooBig.join(", ")}`,
+      });
+    }
+
+    if (okFiles.length === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const fileArr = okFiles;
 
     try {
       const checkRes = await fetch("http://localhost:8000/documents/check", {
@@ -271,14 +403,16 @@ function App() {
         setDecisions(initial);
       }
     } catch (err) {
-      alert(`Kontrol hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`);
+      alert(
+        `Kontrol hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`,
+      );
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
   async function doUpload(
     files: File[],
-    decisionsMap: Record<string, "overwrite" | "skip">
+    decisionsMap: Record<string, "overwrite" | "skip">,
   ) {
     // Çakışma modal'ı hemen kapansın — yükleme başlıyor
     setPendingFiles([]);
@@ -303,10 +437,26 @@ function App() {
       const result = await response.json();
       console.log("Yükleme sonucu:", result);
 
+      // Toast özeti
+      const successCount = result.success?.length ?? 0;
+      const skippedCount = result.skipped?.length ?? 0;
+      const failedCount = result.failed?.length ?? 0;
+      const summary: string[] = [];
+      if (successCount > 0) summary.push(`${successCount} yüklendi`);
+      if (skippedCount > 0) summary.push(`${skippedCount} atlandı`);
+      if (failedCount > 0) summary.push(`${failedCount} başarısız`);
+      setToast({
+        type: failedCount > 0 ? "error" : "success",
+        message: summary.join(" · ") || "Hiçbir dosya işlenmedi",
+      });
+
       await refreshDocs();
     } catch (err) {
       console.error("Yükleme hatası:", err);
-      alert(`Yükleme hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`);
+      setToast({
+        type: "error",
+        message: `Yükleme hatası: ${err instanceof Error ? err.message : "bilinmeyen"}`,
+      });
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -343,7 +493,7 @@ function App() {
             Seçili: <span className="font-medium">{selectedDoc}</span>
           </span>
         )}
-        <div className="ml-auto relative">
+        <div className="ml-auto relative" ref={collectionMenuRef}>
           <button
             onClick={() => setShowCollectionMenu((v) => !v)}
             className="text-sm text-gray-700 hover:bg-gray-100 px-3 py-1 rounded flex items-center gap-1"
@@ -353,7 +503,7 @@ function App() {
           </button>
 
           {showCollectionMenu && (
-            <div className="absolute right-0 top-full mt-1 bg-white border rounded shadow-lg min-w-[200px] z-50">
+            <div className="absolute right-0 top-full mt-1 bg-white border rounded shadow-lg min-w-50 z-50">
               <ul className="py-1">
                 {allCollections.map((name) => (
                   <li
@@ -457,18 +607,32 @@ function App() {
                   : "Önce sol panelden bir doküman seç."}
               </p>
             )}
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={
-                  msg.role === "user"
-                    ? "max-w-xl ml-auto bg-blue-500 text-white px-3 py-2 rounded-lg whitespace-pre-wrap"
-                    : "max-w-xl bg-gray-100 px-3 py-2 rounded-lg whitespace-pre-wrap"
-                }
-              >
-                {msg.content || (isStreaming && i === messages.length - 1 ? "..." : "")}
-              </div>
-            ))}
+            {messages.map((msg, i) => {
+              const isLastStreaming = isStreaming && i === messages.length - 1;
+              if (msg.role === "user") {
+                return (
+                  <div
+                    key={i}
+                    className="max-w-xl ml-auto bg-blue-500 text-white px-3 py-2 rounded-lg whitespace-pre-wrap"
+                  >
+                    {msg.content}
+                  </div>
+                );
+              }
+              // Asistan
+              return (
+                <div
+                  key={i}
+                  className="max-w-xl bg-gray-100 px-3 py-2 rounded-lg"
+                >
+                  {msg.content ? (
+                    <AssistantMessage content={msg.content} />
+                  ) : isLastStreaming ? (
+                    <span className="text-gray-500">...</span>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
 
           <div className="border-t p-4 flex gap-2">
@@ -523,12 +687,18 @@ function App() {
 
             <ul className="space-y-2 max-h-64 overflow-y-auto mb-4">
               {conflicts.map((name) => (
-                <li key={name} className="flex items-center justify-between gap-2">
+                <li
+                  key={name}
+                  className="flex items-center justify-between gap-2"
+                >
                   <span className="text-sm truncate flex-1">{name}</span>
                   <div className="flex gap-1">
                     <button
                       onClick={() =>
-                        setDecisions((prev) => ({ ...prev, [name]: "overwrite" }))
+                        setDecisions((prev) => ({
+                          ...prev,
+                          [name]: "overwrite",
+                        }))
                       }
                       className={`text-xs px-2 py-1 rounded ${
                         decisions[name] === "overwrite"
@@ -583,6 +753,28 @@ function App() {
                 PDF parse + VLM analizi + embedding. Bu dakikalar sürebilir.
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <div
+            className={`px-4 py-3 rounded-lg shadow-lg max-w-md text-sm flex items-start gap-3 ${
+              toast.type === "success"
+                ? "bg-green-50 border border-green-200 text-green-900"
+                : toast.type === "error"
+                  ? "bg-red-50 border border-red-200 text-red-900"
+                  : "bg-blue-50 border border-blue-200 text-blue-900"
+            }`}
+          >
+            <span className="flex-1">{toast.message}</span>
+            <button
+              onClick={() => setToast(null)}
+              className="text-gray-500 hover:text-gray-700 text-xs"
+            >
+              ×
+            </button>
           </div>
         </div>
       )}
