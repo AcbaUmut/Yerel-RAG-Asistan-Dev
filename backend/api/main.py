@@ -8,7 +8,7 @@ from core.config import AppConfig
 from core.db_manager import DBManager
 from core.logger import setup_logging
 from core.query_engine import QueryEngine
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -136,7 +136,7 @@ def delete_documents(body: DeleteDocumentsRequest):
 @app.post("/documents")
 def add_documents(
     files: list[UploadFile] = File(...),
-    decisions: str = "{}",
+    decisions: str = Form("{}"),
 ):
     """
     PDF yükler. Çakışan dosyalar için frontend, /documents/check'ten

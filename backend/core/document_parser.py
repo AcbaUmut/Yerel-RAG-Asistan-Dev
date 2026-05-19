@@ -608,7 +608,7 @@ class DocumentParser:
             i += 1
 
         # ── Aşama 3: Node üretimi ─────────────────────────────────────────────
-        base_metadata = {"file_name": file_path}
+        base_metadata = {"file_name": os.path.basename(file_path)}
         nodes: list = []
         last_heading = ""  # Son görülen başlık metni
 
