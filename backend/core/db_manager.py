@@ -10,6 +10,32 @@ from core.ingestion_engine import IngestionEngine
 log = logging.getLogger(__name__)
 
 
+def _atomic_write_json(path: str, data: dict) -> None:
+    """
+    JSON'u atomik olarak yazar: önce .tmp dosyasına yaz + fsync + os.replace.
+
+    Yazma yarıda kalırsa (elektrik, kill, crash) asıl dosya korunur; rename
+    işletim sistemi düzeyinde atomik olduğu için ya eski ya yeni hâli görünür,
+    asla yarım yazılmış bozuk JSON kalmaz. catalog ve sections gibi kritik
+    dosyalar için zorunlu — onlar bozulursa backend hiç açılmaz.
+    """
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # Diske git, OS cache'inde kalma
+        os.replace(tmp_path, path)  # Atomik rename — Windows ve Unix'te
+    except Exception:
+        # Yarım kalan tmp dosyasını temizle, yoksa diskte birikir
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 class DBManager:
     """
     Veritabanı yönetiminin merkezi sınıfı.
@@ -51,7 +77,10 @@ class DBManager:
             self._save_catalog(initial)
             log.info(f"Yeni catalog oluşturuldu: {self.catalog_path}")
 
-        # Önceki oturumdan kalan orphan segment klasörlerini temizle
+        # Önceki oturumdan kalan orphan kayıtları temizle:
+        #   1) Catalog'da yok ama DB'de var olan dokümanlar (crash recovery)
+        #   2) Aktif olmayan ChromaDB segment klasörleri
+        self._cleanup_orphan_documents()
         self._cleanup_orphan_segments()
 
     # ── Catalog dosyası okuma/yazma ──────────────────────────────────────────
@@ -72,10 +101,12 @@ class DBManager:
             raise
 
     def _save_catalog(self, catalog: dict) -> None:
-        """Catalog'u diske yazar. Tüm yazma işlemleri buradan geçer."""
+        """
+        Catalog'u diske yazar. Tüm yazma işlemleri buradan geçer.
+        Atomik yazım: çökme/elektrik kesintisinde dosya bozulmaz.
+        """
         try:
-            with open(self.catalog_path, "w", encoding="utf-8") as f:
-                json.dump(catalog, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(self.catalog_path, catalog)
             log.debug(f"Catalog kaydedildi: {self.catalog_path}")
         except OSError as e:
             log.error(f"Catalog dosyası yazılamadı: {e}", exc_info=True)
@@ -186,8 +217,7 @@ class DBManager:
         removed = before - len(filtered)
 
         try:
-            with open(self.sections_path, "w", encoding="utf-8") as f:
-                json.dump(filtered, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(self.sections_path, filtered)
             log.debug(
                 f"sections.json'dan {removed} section silindi "
                 f"(koleksiyon: {collection_name})"
@@ -411,8 +441,7 @@ class DBManager:
         removed = before - len(filtered)
 
         try:
-            with open(self.sections_path, "w", encoding="utf-8") as f:
-                json.dump(filtered, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(self.sections_path, filtered)
             log.debug(
                 f"sections.json'dan {removed} section silindi "
                 f"(doküman: {file_name}, koleksiyon: {collection_name})"
@@ -449,14 +478,80 @@ class DBManager:
         except Exception as e:
             log.warning(f"VACUUM sırasında hata: {e}", exc_info=True)
 
-    def _cleanup_orphan_segments(self) -> None:
+    def _cleanup_orphan_documents(self) -> None:
         """
-        ChromaDB'nin SQLite'taki aktif segment ID'lerini alır, persist_dir
-        içindeki UUID'li klasörleri tarar, listede olmayanları siler.
+        Catalog'da olmayan ama ChromaDB'de chunk'ları olan yetim dokümanları
+        temizler. Çökme/elektrik kesintisi sonrası tutarsızlığı düzeltir.
 
-        ChromaDB delete_collection() segment klasörlerini diskten silmiyor —
-        bu method onu telafi eder. Silme operasyonlarından sonra çağrılır.
+        Senaryo: ingestion sırasında DB'ye chunk'lar yazıldı ama catalog'a
+        yazılamadan crash oldu. Sonuç: DB'de yetim chunk'lar, catalog'da kayıt yok.
+        Eğer temizlenmezse sorgular bu yetim chunk'ları sonuçlara katıp
+        yanlış cevap üretir, daha kötüsü kullanıcı dosyayı silseler bile
+        "hayalet" sonuçlar geri gelir.
+
+        Bu metod startup'ta çalışır. Her koleksiyonun ChromaDB metadata'larını
+        tarar, catalog'da olmayan file_name'leri tespit eder ve siler.
         """
+        if not os.path.exists(self.catalog_path):
+            return
+
+        try:
+            catalog = self._load_catalog()
+        except Exception as e:
+            log.warning(f"Catalog okunamadı, orphan doc check atlandı: {e}")
+            return
+
+        total_removed = 0
+
+        for collection_name in list(catalog["collections"].keys()):
+            catalog_files = set(
+                catalog["collections"][collection_name]["documents"].keys()
+            )
+
+            try:
+                chroma_col = self.chroma_client.get_or_create_collection(collection_name)
+                # Embedding'i atla, sadece metadata'ları çek — çok daha hızlı
+                result = chroma_col.get(include=["metadatas"])
+                metadatas = result.get("metadatas", []) or []
+            except Exception as e:
+                log.warning(
+                    f"'{collection_name}' için metadata okunamadı, atlandı: {e}",
+                    exc_info=True,
+                )
+                continue
+
+            # DB'deki unique file_name'leri çıkar
+            db_files = {
+                md["file_name"]
+                for md in metadatas
+                if md and "file_name" in md
+            }
+
+            # Catalog'da olmayan = yetim
+            orphan_files = db_files - catalog_files
+
+            for orphan in orphan_files:
+                try:
+                    chroma_col.delete(where={"file_name": orphan})
+                    self._delete_sections_by_document(orphan, collection_name)
+                    log.info(
+                        f"Yetim doküman temizlendi: '{orphan}' "
+                        f"(koleksiyon: '{collection_name}')"
+                    )
+                    total_removed += 1
+                except Exception as e:
+                    log.warning(
+                        f"Yetim '{orphan}' silinemedi: {e}", exc_info=True
+                    )
+
+        if total_removed:
+            log.info(
+                f"Toplam {total_removed} yetim doküman temizlendi (çökme recovery)."
+            )
+            # Sildiğimiz kayıtlar için SQLite freelist'i sıkıştır
+            self._vacuum_db()
+
+    def _cleanup_orphan_segments(self) -> None:
         import shutil
         import sqlite3
 

@@ -32,10 +32,11 @@ class AppConfig:
     EMBED_MODEL_DIR: Path = MODELS_DIR / EMBED_MODEL_DIR_NAME
 
     # ── Ingestion sınırları ──────────────────────────────────────────────
-    # Parse aşamasında VLM tüm sayfa görüntülerini RAM'e açtığı için peak
-    # memory dosya boyutuyla orantılı artıyor. 16 GB RAM ve eşzamanlı VLM
-    # yüklü senaryoda güvenli sınır.
-    MAX_FILE_SIZE_MB: int = 50
+    # Pratikte tezde kullanılacak akademik PDF'ler 1-5 MB aralığında.
+    # 15 MB cap, anormal büyük dosyaları engeller ama makul senaryoları
+    # kısıtlamaz. VLM parse sırasında peak RAM dosya boyutuyla orantılı
+    # arttığı için bu cap aynı zamanda RAM güvenliği sağlıyor.
+    MAX_FILE_SIZE_MB: int = 15
 
     # ── Chunk parametreleri ──────────────────────────────────────────────
     CHUNK_SIZE: int = 1100
@@ -62,6 +63,6 @@ class AppConfig:
     LLM_TEMPERATURE: float = 0.1
 
     # ── VLM ──────────────────────────────────────────────────────────────
-    VLM_N_CTX: int = 6144
+    VLM_N_CTX: int = 8192
     VLM_MAX_TOKENS: int = 1536
     VLM_TEMPERATURE: float = 0.0

@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import chromadb
 import numpy as np
+import onnxruntime as ort
 from core.config import AppConfig
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
@@ -15,6 +16,12 @@ from optimum.onnxruntime import ORTModelForFeatureExtraction
 from transformers import AutoTokenizer
 
 log = logging.getLogger(__name__)
+
+# Embedding inference sırasında VRAM kullanımını sınırlayan iç batch boyutu.
+# Tek seferde 32 metin tokenize edilip ORT'a verilir; binlerce chunk gelse de
+# VRAM kullanımı sabit kalır. 8GB VRAM kartında 32 güvenli; daha büyük batch
+# hızlandırır ama VRAM taşma riskini artırır.
+_EMBED_BATCH_SIZE: int = 32
 
 
 class JinaEmbeddings(BaseEmbedding):
@@ -32,7 +39,10 @@ class JinaEmbeddings(BaseEmbedding):
         arbitrary_types_allowed = True
 
     def __init__(self, device: str = "cuda"):
-        super().__init__(model_name="jina-v5-nano-onnx")
+        # embed_batch_size=10: LlamaIndex'in default'u. 4 dosyada peak ~3.4 GB
+        # ölçüldü, 6 GB cap'le bol pay var. Daha yüksek batch ingestion'ı
+        # hızlandırır ama attention bellek karesinde büyür; 10 dengeli nokta.
+        super().__init__(model_name="jina-v5-nano-onnx", embed_batch_size=10)
         if device not in ("cuda", "cpu"):
             raise ValueError(f"device 'cuda' veya 'cpu' olmalı, aldı: {device}")
 
@@ -56,7 +66,18 @@ class JinaEmbeddings(BaseEmbedding):
             provider_options = [
                 {
                     "device_id": 0,
-                    "arena_extend_strategy": "kSameAsRequested",
+                    # ÖNEMLİ: kSameAsRequested birikim yapar — ORT GitHub issue
+                    # #14474 ve #13500'de doğrulanmış, eski tensor'lar geri
+                    # alınmıyor. kNextPowerOfTwo pool'dan reuse ediyor: aynı
+                    # boyutta yeni alloc istense bile var olan blok yeniden
+                    # kullanılıyor. Bizim için tek dosya/4 dosya farkını
+                    # ortadan kaldıracak ana ayar.
+                    "arena_extend_strategy": "kNextPowerOfTwo",
+                    # Hard cap: embedder VRAM'in en fazla 6 GB'ını alabilir.
+                    # 4 dosyada peak ölçümü 3.4 GB olduğundan 6 GB cap bol
+                    # rahat pay tanır ama beklenmedik leak/sıçrama olursa
+                    # paylaşımlı belleğe taşmadan burada tepelenir.
+                    "gpu_mem_limit": 6 * 1024 * 1024 * 1024,
                     "cudnn_conv_algo_search": "DEFAULT",
                     "do_copy_in_default_stream": True,
                 }
@@ -65,12 +86,23 @@ class JinaEmbeddings(BaseEmbedding):
             provider = "CPUExecutionProvider"
             provider_options = None
 
+        # SessionOptions — peak memory için kritik.
+        # enable_mem_pattern=True (default) intermediate tensor'ları reuse
+        # için tutar; ONNX kaynak kodundaki kendi yorumlarına göre:
+        # "can lead to memory being held for longer than needed and can
+        # impact peak memory consumption". Bizim senaryomuzda peak'i
+        # düşürmek için kapatıyoruz. Hız etkisi minimal.
+        sess_options = ort.SessionOptions()
+        if self._device == "cuda":
+            sess_options.enable_mem_pattern = False
+
         self._model = ORTModelForFeatureExtraction.from_pretrained(
             self._model_dir,
             subfolder="onnx",
             file_name="model.onnx",
             provider=provider,
             provider_options=provider_options,
+            session_options=sess_options,
             trust_remote_code=True,
             local_files_only=True,
         )
@@ -106,41 +138,62 @@ class JinaEmbeddings(BaseEmbedding):
 
     # ── Encode (numpy I/O) ───────────────────────────────────────────────
     def _encode(self, texts: List[str]) -> List[List[float]]:
+        """
+        Verilen metinleri embed eder. İç batch ile VRAM güvenli:
+        gelen liste ne kadar uzun olursa olsun, tek seferde en fazla
+        _EMBED_BATCH_SIZE kadar metin tokenize edilip inference yapılır.
+
+        Önemli: LlamaIndex VectorStoreIndex tüm chunk'ları (binlerce olabilir)
+        tek çağrıda gönderebilir; eski tek-batch sürümü bu durumda VRAM'i
+        7-8 GB doldurup paylaşımlı belleğe taşma yapıyordu.
+        """
         if self._model is None or self._tokenizer is None:
             raise RuntimeError(
                 "Model tahliye edilmiş; tekrar JinaEmbeddings() oluştur."
             )
 
-        # Tokenizer'dan numpy iste — torch tensor üretimini atla.
-        enc = self._tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=2048,
-            return_tensors="np",
-        )
+        all_embeddings: List[List[float]] = []
 
-        # ORT InferenceSession'a doğrudan numpy ver.
-        # CUDA provider aktifse host→device kopya ORT içinde yapılır.
-        ort_inputs = {
-            "input_ids": enc["input_ids"].astype(np.int64),
-            "attention_mask": enc["attention_mask"].astype(np.int64),
-        }
-        outputs = self._model.model.run(None, ort_inputs)
-        last_hidden = outputs[0]  # (batch, seq, hidden), numpy
+        for start in range(0, len(texts), _EMBED_BATCH_SIZE):
+            batch = texts[start : start + _EMBED_BATCH_SIZE]
 
-        # Last-token pooling (resmi Jina kullanımı)
-        attention_mask = enc["attention_mask"]
-        seq_lengths = attention_mask.sum(axis=1) - 1
-        batch_idx = np.arange(last_hidden.shape[0])
-        embeddings = last_hidden[batch_idx, seq_lengths]
+            # Tokenizer'dan numpy iste — torch tensor üretimini atla.
+            # max_length=1536: VLM blokları (VLM_MAX_TOKENS=1536) tek chunk
+            # olarak gelebildiği için cap'i ona göre tutuyoruz, bilgi kaybı
+            # olmasın. Attention seq^2 ile büyüdüğü için embed_batch_size=5
+            # ile dengeliyoruz (init'te ayarlı). VLM olmayan kısa chunk'lar
+            # padding=True ile zaten asıl uzunluklarında kalır.
+            enc = self._tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=1536,
+                return_tensors="np",
+            )
 
-        # L2 normalize
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-8)
-        embeddings = embeddings / norms
+            # ORT InferenceSession'a doğrudan numpy ver.
+            # CUDA provider aktifse host→device kopya ORT içinde yapılır.
+            ort_inputs = {
+                "input_ids": enc["input_ids"].astype(np.int64),
+                "attention_mask": enc["attention_mask"].astype(np.int64),
+            }
+            outputs = self._model.model.run(None, ort_inputs)
+            last_hidden = outputs[0]  # (batch, seq, hidden), numpy
 
-        return embeddings.tolist()
+            # Last-token pooling (resmi Jina kullanımı)
+            attention_mask = enc["attention_mask"]
+            seq_lengths = attention_mask.sum(axis=1) - 1
+            batch_idx = np.arange(last_hidden.shape[0])
+            embeddings = last_hidden[batch_idx, seq_lengths]
+
+            # L2 normalize
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms = np.maximum(norms, 1e-8)
+            embeddings = embeddings / norms
+
+            all_embeddings.extend(embeddings.tolist())
+
+        return all_embeddings
 
     # ── BaseEmbedding kontratı ───────────────────────────────────────────
     def _get_text_embedding(self, text: str) -> List[float]:
@@ -154,6 +207,31 @@ class JinaEmbeddings(BaseEmbedding):
 
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
         return self._encode([f"Document: {t}" for t in texts])
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """
+    JSON'u atomik olarak yazar: önce .tmp dosyasına yaz + fsync + os.replace.
+
+    Yazma yarıda kalırsa (elektrik, kill, crash) asıl dosya korunur; rename
+    işletim sistemi düzeyinde atomik olduğu için ya eski ya yeni hâli görünür,
+    asla yarım yazılmış bozuk JSON kalmaz.
+    """
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # Diske git, OS cache'inde kalma
+        os.replace(tmp_path, path)  # Atomik rename — Windows ve Unix'te
+    except Exception:
+        # Yarım kalan tmp dosyasını temizle, yoksa diskte birikir
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 class VectorStoreEngine:
@@ -194,6 +272,8 @@ class VectorStoreEngine:
 
         Dosya yapısı:
             { "<section_id>": {"text": "...", "metadata": {...}}, ... }
+
+        Yazma atomik (.tmp + os.replace) — çökme sırasında bozuk dosya kalmaz.
         """
 
         sections_file = os.path.join(self.persist_dir, "sections.json")
@@ -219,8 +299,7 @@ class VectorStoreEngine:
             }
 
         try:
-            with open(sections_file, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(sections_file, existing)
             log.debug(f"sections.json güncellendi: {len(parent_nodes)} yeni section")
         except Exception as e:
             log.error(f"sections.json yazılamadı: {e}", exc_info=True)
