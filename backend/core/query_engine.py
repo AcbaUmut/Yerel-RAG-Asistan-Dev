@@ -36,19 +36,21 @@ class QueryEngine:
         self.collection_name = collection_name
         self.persist_dir = persist_dir
 
-    def run(self, question: str, file_name: str) -> str:
+    def run(self, question: str, file_name: str | None = None) -> str:
         """
         Sorguyu çalıştırır, cevabı string olarak döndürür.
 
         file_name: Hangi dokümanda arama yapılacak. RetrieverEngine'a
                    metadata filtresi olarak iletilir.
+                   None ise tüm aktif koleksiyon kapsamında aranır.
 
         Bellek yönetimi: 'with' blokları sayesinde RetrieverEngine ve
         LLMEngine her koşulda (exception olsa bile) unload edilir.
         """
+        scope_label = f"doküman: '{file_name}'" if file_name else "tüm koleksiyon"
         log.info(
             f"Sorgu başlatıldı — koleksiyon: '{self.collection_name}', "
-            f"doküman: '{file_name}', soru: {question!r}"
+            f"{scope_label}, soru: {question!r}"
         )
         start_time = time.time()
 
@@ -91,7 +93,7 @@ class QueryEngine:
         log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")
         return answer
 
-    def run_stream(self, question: str, file_name: str):
+    def run_stream(self, question: str, file_name: str | None = None):
         """
         Sorguyu çalıştırır, cevabı token token yield eder.
 
@@ -99,10 +101,13 @@ class QueryEngine:
         aşamasında stream döner. 'with' blokları sayesinde frontend
         bağlantıyı koparırsa (GeneratorExit) veya exception çıkarsa bile
         her iki engine unload edilir.
+
+        file_name=None: tüm aktif koleksiyon kapsamında arar.
         """
+        scope_label = f"doküman: '{file_name}'" if file_name else "tüm koleksiyon"
         log.info(
             f"Streaming sorgu — koleksiyon: '{self.collection_name}', "
-            f"doküman: '{file_name}', soru: {question!r}"
+            f"{scope_label}, soru: {question!r}"
         )
         start_time = time.time()
 

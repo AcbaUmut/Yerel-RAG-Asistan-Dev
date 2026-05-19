@@ -11,6 +11,7 @@ class AppConfig:
     DATABASE_DIR: Path = DATA_DIR / "database"
     LOGS_DIR: Path = DATA_DIR / "logs"
     TEMP_IMAGES_DIR: Path = DATA_DIR / "temp_images"
+    CHATS_DIR: Path = DATA_DIR / "chats"
 
     # ── Sabit dosya isimleri ─────────────────────────────────────────────
     CATALOG_FILENAME: str = "documents.json"

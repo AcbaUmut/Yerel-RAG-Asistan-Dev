@@ -7,6 +7,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from core.config import AppConfig
+from core.chat_manager import ChatManager
 from core.db_manager import DBManager
 from core.logger import setup_logging
 from core.query_engine import QueryEngine
@@ -48,6 +49,9 @@ app.add_middleware(
 # sürece yaşar. Terminal'deki App.__init__ içindeki self.db
 # ne işe yarıyorsa burada da aynı görev.
 db = DBManager()
+
+# ChatManager — sohbet dosyalarını yönetir, data/chats/<id>.json
+chat_manager = ChatManager()
 
 # Sorgu lock'u — aynı anda en fazla bir sorgu çalışsın.
 # Sebep: 8GB VRAM kullanıcı aynı anda iki sorgu gönderirse iki LLM yan yana
@@ -259,10 +263,10 @@ def check_documents(body: CheckDocumentsRequest):
 
 
 class QueryRequest(BaseModel):
-    """Sorgu için gerekli bilgiler."""
+    """Sorgu için gerekli bilgiler. file_name=None ise tüm koleksiyon kapsamı."""
 
     question: str
-    file_name: str
+    file_name: str | None = None
 
 
 @app.post("/query")
@@ -278,8 +282,9 @@ def query(body: QueryRequest):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Soru boş olamaz.")
 
-    # Doküman aktif koleksiyonda var mı? Yoksa boşa model yükleme.
-    if not db.document_exists(body.file_name):
+    # Doküman adı verilmişse var olduğunu doğrula. file_name=None ise
+    # tüm aktif koleksiyon kapsamında arama yapılacak — doğrulama gerekmez.
+    if body.file_name is not None and not db.document_exists(body.file_name):
         raise HTTPException(
             status_code=404,
             detail=f"'{body.file_name}' aktif koleksiyonda bulunamadı.",
@@ -313,7 +318,8 @@ def query_stream(body: QueryRequest):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Soru boş olamaz.")
 
-    if not db.document_exists(body.file_name):
+    # file_name=None → tüm koleksiyon kapsamı. Dolu ise doküman var mı bak.
+    if body.file_name is not None and not db.document_exists(body.file_name):
         raise HTTPException(
             status_code=404,
             detail=f"'{body.file_name}' aktif koleksiyonda bulunamadı.",
@@ -347,3 +353,121 @@ def query_stream(body: QueryRequest):
         stream_with_lock(),
         media_type="text/plain; charset=utf-8",
     )
+
+
+# ── Sohbet endpoint'leri ─────────────────────────────────────────────────
+
+
+@app.get("/chats")
+def list_chats(collection: str | None = None):
+    """
+    Sohbet listesini döner (mesajsız özet, hızlı sidebar render için).
+    collection verilirse o koleksiyondaki sohbetleri filtreler.
+    """
+    return {"chats": chat_manager.list_chats(collection=collection)}
+
+
+@app.get("/chats/{chat_id}")
+def get_chat(chat_id: str):
+    """Tek bir sohbeti tüm mesajlarıyla döner."""
+    chat = chat_manager.get_chat(chat_id)
+    if chat is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sohbet bulunamadı: {chat_id}",
+        )
+    return chat
+
+
+class CreateChatRequest(BaseModel):
+    """Yeni sohbet açılırken hangi koleksiyona bağlanacağı."""
+
+    collection: str
+
+
+@app.post("/chats")
+def create_chat(body: CreateChatRequest):
+    """Yeni boş sohbet açar, koleksiyona kilitler."""
+    # Koleksiyonun var olduğunu doğrula — olmayan koleksiyona sohbet açmak,
+    # sonra orphan sohbet oluşturmak demektir, hiç yaratılmasın.
+    if body.collection not in db.list_collections():
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{body.collection}' adında koleksiyon yok.",
+        )
+    return chat_manager.create_chat(body.collection)
+
+
+@app.delete("/chats/{chat_id}")
+def delete_chat(chat_id: str):
+    """Sohbeti kalıcı olarak siler."""
+    success = chat_manager.delete_chat(chat_id)
+    if not success:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sohbet bulunamadı: {chat_id}",
+        )
+    return {"deleted": chat_id}
+
+
+class UpdateChatTitleRequest(BaseModel):
+    """Başlık güncelleme için."""
+
+    title: str
+
+
+@app.patch("/chats/{chat_id}")
+def update_chat_title(chat_id: str, body: UpdateChatTitleRequest):
+    """Sadece sohbet başlığını günceller."""
+    chat = chat_manager.update_title(chat_id, body.title)
+    if chat is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sohbet bulunamadı: {chat_id}",
+        )
+    return chat
+
+
+class MessageScope(BaseModel):
+    """
+    Bir user mesajının hangi kapsamda sorulduğunu temsil eder.
+    type='document' ise file_name dolu olmalı.
+    type='collection' ise tüm aktif koleksiyon kapsamı demek, file_name None.
+    """
+
+    type: str  # "document" | "collection"
+    file_name: str | None = None
+
+
+class AddMessageRequest(BaseModel):
+    """Sohbete eklenecek tek bir mesaj."""
+
+    role: str  # "user" | "assistant"
+    content: str
+    scope: MessageScope | None = None
+
+
+@app.post("/chats/{chat_id}/messages")
+def add_message(chat_id: str, body: AddMessageRequest):
+    """
+    Sohbete bir mesaj ekler. Frontend her user mesajı ve her assistant
+    cevabı (stream bittikten sonra) için bunu çağırır.
+    İlk user mesajında ChatManager başlığı otomatik üretir.
+    """
+    if body.role not in ("user", "assistant"):
+        raise HTTPException(
+            status_code=400,
+            detail="role 'user' veya 'assistant' olmalı.",
+        )
+
+    message: dict = {"role": body.role, "content": body.content}
+    if body.scope is not None:
+        message["scope"] = body.scope.model_dump()
+
+    chat = chat_manager.add_message(chat_id, message)
+    if chat is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sohbet bulunamadı: {chat_id}",
+        )
+    return chat

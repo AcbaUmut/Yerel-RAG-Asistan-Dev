@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./App.css";
 
+const API = "http://localhost:8000";
+
 type Doc = {
   file_name: string;
   chunk_count: number;
@@ -10,9 +12,24 @@ type Doc = {
   added_at: string;
 };
 
+type MessageScope = {
+  type: "document" | "collection";
+  file_name?: string | null;
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
+  scope?: MessageScope;
+};
+
+type ChatSummary = {
+  id: string;
+  title: string;
+  collection: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
 };
 
 type ToastMsg = {
@@ -83,6 +100,27 @@ function AssistantMessage({ content }: { content: string }) {
   );
 }
 
+// User mesajının yanında "hangi kapsamda soruldu" rozeti.
+// type=document → 📄 <file_name>, type=collection → 📁 koleksiyon
+function ScopeBadge({ scope }: { scope?: MessageScope }) {
+  if (!scope) return null;
+  if (scope.type === "document" && scope.file_name) {
+    return (
+      <div className="text-xs text-gray-400 mt-1 text-right">
+        📄 {scope.file_name}
+      </div>
+    );
+  }
+  if (scope.type === "collection") {
+    return (
+      <div className="text-xs text-gray-400 mt-1 text-right">
+        📁 tüm koleksiyon
+      </div>
+    );
+  }
+  return null;
+}
+
 function App() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [collection, setCollection] = useState<string>("");
@@ -93,6 +131,12 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+
+  // Sohbet state'leri
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [editingTitleValue, setEditingTitleValue] = useState<string>("");
 
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -116,11 +160,15 @@ function App() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
 
+  // Aktif sohbet başlığı (header'da göstermek için)
+  const activeChat = chats.find((c) => c.id === activeChatId);
+
+  // ── Initial fetch ──────────────────────────────────────────────────────
   useEffect(() => {
     Promise.all([
-      fetch("http://localhost:8000/documents").then((r) => r.json()),
-      fetch("http://localhost:8000/collections").then((r) => r.json()),
-      fetch("http://localhost:8000/health").then((r) => r.json()),
+      fetch(`${API}/documents`).then((r) => r.json()),
+      fetch(`${API}/collections`).then((r) => r.json()),
+      fetch(`${API}/health`).then((r) => r.json()),
     ])
       .then(([docsData, colData, healthData]) => {
         setDocs(docsData.documents);
@@ -136,6 +184,13 @@ function App() {
         setLoading(false);
       });
   }, []);
+
+  // Aktif koleksiyon değişince sohbet listesi de yenilensin
+  useEffect(() => {
+    if (!collection) return;
+    refreshChats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection]);
 
   // Dropdown dışına tıklayınca kapansın
   useEffect(() => {
@@ -167,7 +222,6 @@ function App() {
   }, [messages, autoScroll]);
 
   // Kullanıcı scroll edince autoScroll'u güncelle.
-  // En altta mı? → autoScroll açık. Yukarıdaysa → kapalı.
   function handleMessagesScroll() {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -175,29 +229,128 @@ function App() {
     setAutoScroll(atBottom);
   }
 
+  // ── Sohbet işlemleri ────────────────────────────────────────────────────
+
+  async function refreshChats() {
+    try {
+      const r = await fetch(
+        `${API}/chats?collection=${encodeURIComponent(collection)}`,
+      );
+      if (!r.ok) return;
+      const data = await r.json();
+      setChats(data.chats ?? []);
+    } catch (err) {
+      console.error("Sohbet listesi yenilenemedi:", err);
+    }
+  }
+
+  function handleNewChat() {
+    // Lazy: hemen backend'e yaratmıyoruz, ilk mesajda yaratılacak.
+    setActiveChatId(null);
+    setMessages([]);
+    setAutoScroll(true);
+  }
+
+  async function handleSelectChat(chatId: string) {
+    if (chatId === activeChatId) return;
+    try {
+      const r = await fetch(`${API}/chats/${chatId}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const chat = await r.json();
+      setActiveChatId(chatId);
+      setMessages(chat.messages ?? []);
+      setAutoScroll(true);
+    } catch (err) {
+      setToast({ type: "error", message: "Sohbet yüklenemedi." });
+      console.error(err);
+    }
+  }
+
+  async function handleDeleteChat(chatId: string) {
+    if (!confirm("Bu sohbet silinecek. Emin misin?")) return;
+    try {
+      const r = await fetch(`${API}/chats/${chatId}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setChats((prev) => prev.filter((c) => c.id !== chatId));
+      if (activeChatId === chatId) {
+        setActiveChatId(null);
+        setMessages([]);
+      }
+    } catch (err) {
+      setToast({ type: "error", message: "Sohbet silinemedi." });
+      console.error(err);
+    }
+  }
+
+  function handleStartRename(chat: ChatSummary) {
+    setEditingTitleId(chat.id);
+    setEditingTitleValue(chat.title);
+  }
+
+  async function handleSubmitRename() {
+    if (!editingTitleId) return;
+    const title = editingTitleValue.trim();
+    const id = editingTitleId;
+    setEditingTitleId(null);
+    if (!title) return;
+    try {
+      const r = await fetch(`${API}/chats/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setChats((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, title } : c)),
+      );
+    } catch (err) {
+      setToast({ type: "error", message: "Başlık güncellenemedi." });
+      console.error(err);
+    }
+  }
+
+  function handleCancelRename() {
+    setEditingTitleId(null);
+    setEditingTitleValue("");
+  }
+
+  // ── Mesaj gönderme ──────────────────────────────────────────────────────
+
   async function handleSend() {
-    if (!input.trim() || !selectedDoc || isStreaming) return;
+    if (!input.trim() || isStreaming) return;
 
     const question = input.trim();
+    // Bu mesajın kapsamı: doküman seçiliyse o doküman, değilse tüm koleksiyon
+    const scope: MessageScope = selectedDoc
+      ? { type: "document", file_name: selectedDoc }
+      : { type: "collection" };
+
     setInput("");
     setIsStreaming(true);
 
+    // Optimistic: UI'a hemen ekle
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: question },
+      { role: "user", content: question, scope },
       { role: "assistant", content: "" },
     ]);
 
+    let assistantContent = "";
+    let shouldPersist = false;
+
     try {
-      const response = await fetch("http://localhost:8000/query/stream", {
+      const response = await fetch(`${API}/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, file_name: selectedDoc }),
+        body: JSON.stringify({
+          question,
+          file_name: selectedDoc, // null gönderebilir, backend tüm koleksiyon arar
+        }),
       });
 
       if (response.status === 409) {
-        // Sunucu meşgul — başka sorgu işleniyor. Mesajı silip toast göster.
-        setMessages((prev) => prev.slice(0, -2)); // user + boş asistanı sil
+        // Sunucu meşgul — UI'dan optimistic mesajları geri al, kaydetme.
+        setMessages((prev) => prev.slice(0, -2));
         setToast({
           type: "info",
           message:
@@ -210,6 +363,7 @@ function App() {
         throw new Error(`HTTP ${response.status}`);
       }
 
+      shouldPersist = true;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
@@ -217,7 +371,7 @@ function App() {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-
+        assistantContent += chunk;
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
@@ -228,22 +382,64 @@ function App() {
         });
       }
     } catch (err) {
+      // Network/HTTP hatası — UI'da hata mesajı, yine kaydet ki kullanıcı geriye dönünce görsün
+      assistantContent = `[Hata: ${err instanceof Error ? err.message : "bilinmeyen"}]`;
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1] = {
           role: "assistant",
-          content: `[Hata: ${err instanceof Error ? err.message : "bilinmeyen"}]`,
+          content: assistantContent,
         };
         return updated;
       });
+      shouldPersist = true;
     } finally {
       setIsStreaming(false);
     }
+
+    // Backend'e kaydet (lazy chat creation + 2 mesaj)
+    if (shouldPersist) {
+      try {
+        let chatId = activeChatId;
+        if (chatId === null) {
+          const r = await fetch(`${API}/chats`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ collection }),
+          });
+          if (!r.ok) throw new Error("Sohbet oluşturulamadı");
+          const newChat = await r.json();
+          chatId = newChat.id;
+          setActiveChatId(chatId);
+        }
+
+        await fetch(`${API}/chats/${chatId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "user", content: question, scope }),
+        });
+        await fetch(`${API}/chats/${chatId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role: "assistant",
+            content: assistantContent,
+          }),
+        });
+
+        // Sıralamayı ve başlığı güncellemek için listeyi yenile
+        refreshChats();
+      } catch (err) {
+        console.warn("Sohbet kaydedilemedi:", err);
+      }
+    }
   }
+
+  // ── Doküman işlemleri ───────────────────────────────────────────────────
 
   async function refreshDocs() {
     try {
-      const res = await fetch("http://localhost:8000/documents");
+      const res = await fetch(`${API}/documents`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setDocs(data.documents);
@@ -257,7 +453,7 @@ function App() {
 
     setDeletingDoc(fileName);
     try {
-      const res = await fetch("http://localhost:8000/documents", {
+      const res = await fetch(`${API}/documents`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ file_names: [fileName] }),
@@ -269,10 +465,10 @@ function App() {
       if (result.failed && result.failed.length > 0) {
         alert(`Silinemedi: ${result.failed[0].reason}`);
       } else {
-        // Eğer silinen dosya seçiliyse seçimi kaldır
+        // Silinen dosya seçiliyse seçimi kaldır — ama aktif sohbetin
+        // mesajlarına dokunma, onlar geriye dönük görüntüleme için kalır.
         if (selectedDoc === fileName) {
           setSelectedDoc(null);
-          setMessages([]);
         }
         await refreshDocs();
       }
@@ -285,6 +481,8 @@ function App() {
     }
   }
 
+  // ── Koleksiyon işlemleri ────────────────────────────────────────────────
+
   async function handleSwitchCollection(name: string) {
     if (name === collection) {
       setShowCollectionMenu(false);
@@ -292,21 +490,22 @@ function App() {
     }
 
     try {
-      const res = await fetch(
-        `http://localhost:8000/collections/${name}/activate`,
-        { method: "POST" },
-      );
+      const res = await fetch(`${API}/collections/${name}/activate`, {
+        method: "POST",
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      // Yeni koleksiyondaki dokümanları çek
-      const docsRes = await fetch("http://localhost:8000/documents");
+      const docsRes = await fetch(`${API}/documents`);
       const docsData = await docsRes.json();
 
       setCollection(name);
       setDocs(docsData.documents);
       setSelectedDoc(null);
+      // Sohbet bir koleksiyona kilitli — koleksiyon değişti, aktif sohbeti bırak
+      setActiveChatId(null);
       setMessages([]);
       setShowCollectionMenu(false);
+      // chats listesi useEffect ile collection değiştiği için otomatik yenilenir
     } catch (err) {
       alert(
         `Koleksiyon değiştirilemedi: ${err instanceof Error ? err.message : "bilinmeyen"}`,
@@ -319,7 +518,7 @@ function App() {
     if (!name || !name.trim()) return;
 
     try {
-      const res = await fetch("http://localhost:8000/collections", {
+      const res = await fetch(`${API}/collections`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim() }),
@@ -349,7 +548,7 @@ function App() {
       return;
 
     try {
-      const res = await fetch(`http://localhost:8000/collections/${name}`, {
+      const res = await fetch(`${API}/collections/${name}`, {
         method: "DELETE",
       });
 
@@ -358,17 +557,16 @@ function App() {
         throw new Error(errBody?.detail || `HTTP ${res.status}`);
       }
 
-      // Eğer aktif koleksiyon silindiyse default'a düştük —
-      // backend otomatik yaptı, frontend'i de senkronla.
       const wasActive = name === collection;
       setAllCollections((prev) => prev.filter((c) => c !== name));
 
       if (wasActive) {
-        const docsRes = await fetch("http://localhost:8000/documents");
+        const docsRes = await fetch(`${API}/documents`);
         const docsData = await docsRes.json();
         setCollection(docsData.collection);
         setDocs(docsData.documents);
         setSelectedDoc(null);
+        setActiveChatId(null);
         setMessages([]);
       }
     } catch (err) {
@@ -377,6 +575,8 @@ function App() {
       );
     }
   }
+
+  // ── Yükleme işlemleri ───────────────────────────────────────────────────
 
   async function handleUpload(files: FileList) {
     if (files.length === 0) return;
@@ -409,7 +609,7 @@ function App() {
     const fileArr = okFiles;
 
     try {
-      const checkRes = await fetch("http://localhost:8000/documents/check", {
+      const checkRes = await fetch(`${API}/documents/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ file_names: fileArr.map((f) => f.name) }),
@@ -420,13 +620,10 @@ function App() {
       const checkData = await checkRes.json();
 
       if (checkData.existing.length === 0) {
-        // Çakışma yok, direkt yükle
         await doUpload(fileArr, {});
       } else {
-        // Çakışma var, modal aç
         setPendingFiles(fileArr);
         setConflicts(checkData.existing);
-        // Varsayılan: hepsi skip
         const initial: Record<string, "overwrite" | "skip"> = {};
         for (const name of checkData.existing) {
           initial[name] = "skip";
@@ -445,7 +642,6 @@ function App() {
     files: File[],
     decisionsMap: Record<string, "overwrite" | "skip">,
   ) {
-    // Çakışma modal'ı hemen kapansın — yükleme başlıyor
     setPendingFiles([]);
     setConflicts([]);
     setDecisions({});
@@ -458,7 +654,7 @@ function App() {
       }
       formData.append("decisions", JSON.stringify(decisionsMap));
 
-      const response = await fetch("http://localhost:8000/documents", {
+      const response = await fetch(`${API}/documents`, {
         method: "POST",
         body: formData,
       });
@@ -468,7 +664,6 @@ function App() {
       const result = await response.json();
       console.log("Yükleme sonucu:", result);
 
-      // Toast özeti
       const successCount = result.success?.length ?? 0;
       const skippedCount = result.skipped?.length ?? 0;
       const failedCount = result.failed?.length ?? 0;
@@ -515,6 +710,8 @@ function App() {
     setDecisions(next);
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col h-screen">
       <header className="border-b px-4 py-2 flex items-center gap-4 relative">
@@ -522,6 +719,11 @@ function App() {
         {selectedDoc && (
           <span className="text-sm text-gray-700">
             Seçili: <span className="font-medium">{selectedDoc}</span>
+          </span>
+        )}
+        {!selectedDoc && activeChatId && (
+          <span className="text-sm text-gray-500 italic">
+            Kapsam: tüm koleksiyon
           </span>
         )}
         <div className="ml-auto relative" ref={collectionMenuRef}>
@@ -572,77 +774,154 @@ function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="w-64 border-r p-4 overflow-y-auto">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">Dokümanlar</h2>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-              className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:bg-gray-300"
-            >
-              {isUploading ? "..." : "+ Ekle"}
-            </button>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) handleUpload(e.target.files);
-            }}
-          />
+        <aside className="w-64 border-r flex flex-col overflow-hidden">
+          {/* Dokümanlar */}
+          <div className="p-4 border-b overflow-y-auto" style={{ maxHeight: "50%" }}>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">Dokümanlar</h2>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:bg-gray-300"
+              >
+                {isUploading ? "..." : "+ Ekle"}
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) handleUpload(e.target.files);
+              }}
+            />
 
-          {loading && <p className="text-sm text-gray-500">Yükleniyor...</p>}
-          {error && <p className="text-sm text-red-600">Hata: {error}</p>}
-          {!loading && !error && docs.length === 0 && (
-            <p className="text-sm text-gray-500">Doküman yok.</p>
-          )}
-          {!loading && !error && docs.length > 0 && (
-            <ul className="space-y-1 text-sm">
-              {docs.map((doc) => (
-                <li
-                  key={doc.file_name}
-                  className={`group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer ${
-                    selectedDoc === doc.file_name
-                      ? "bg-blue-100 text-blue-900"
-                      : "hover:bg-gray-100"
-                  }`}
-                  onClick={() =>
-                    setSelectedDoc((prev) =>
-                      prev === doc.file_name ? null : doc.file_name
-                    )
-                  }
-                >
-                  <span className="truncate">{doc.file_name}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteDoc(doc.file_name);
-                    }}
-                    disabled={deletingDoc === doc.file_name}
-                    className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-600 text-xs px-1 disabled:opacity-50"
-                    title="Sil"
+            {loading && <p className="text-sm text-gray-500">Yükleniyor...</p>}
+            {error && <p className="text-sm text-red-600">Hata: {error}</p>}
+            {!loading && !error && docs.length === 0 && (
+              <p className="text-sm text-gray-500">Doküman yok.</p>
+            )}
+            {!loading && !error && docs.length > 0 && (
+              <ul className="space-y-1 text-sm">
+                {docs.map((doc) => (
+                  <li
+                    key={doc.file_name}
+                    className={`group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer ${
+                      selectedDoc === doc.file_name
+                        ? "bg-blue-100 text-blue-900"
+                        : "hover:bg-gray-100"
+                    }`}
+                    onClick={() =>
+                      setSelectedDoc((prev) =>
+                        prev === doc.file_name ? null : doc.file_name,
+                      )
+                    }
                   >
-                    {deletingDoc === doc.file_name ? "..." : "×"}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+                    <span className="truncate">{doc.file_name}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteDoc(doc.file_name);
+                      }}
+                      disabled={deletingDoc === doc.file_name}
+                      className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-600 text-xs px-1 disabled:opacity-50"
+                      title="Sil"
+                    >
+                      {deletingDoc === doc.file_name ? "..." : "×"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Sohbetler */}
+          <div className="p-4 flex-1 overflow-y-auto">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold">Sohbetler</h2>
+              <button
+                onClick={handleNewChat}
+                className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
+                title="Yeni sohbet aç"
+              >
+                + Yeni
+              </button>
+            </div>
+            {chats.length === 0 && (
+              <p className="text-sm text-gray-500">Henüz sohbet yok.</p>
+            )}
+            {chats.length > 0 && (
+              <ul className="space-y-1 text-sm">
+                {chats.map((chat) => (
+                  <li
+                    key={chat.id}
+                    className={`group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer ${
+                      activeChatId === chat.id
+                        ? "bg-blue-100 text-blue-900"
+                        : "hover:bg-gray-100"
+                    }`}
+                    onClick={() => {
+                      if (editingTitleId !== chat.id) handleSelectChat(chat.id);
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      handleStartRename(chat);
+                    }}
+                    title="Çift tıklayarak başlığı düzenle"
+                  >
+                    {editingTitleId === chat.id ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        value={editingTitleValue}
+                        onChange={(e) => setEditingTitleValue(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleSubmitRename();
+                          if (e.key === "Escape") handleCancelRename();
+                        }}
+                        onBlur={handleSubmitRename}
+                        className="flex-1 border rounded px-1 py-0 text-sm bg-white text-gray-900"
+                      />
+                    ) : (
+                      <span className="truncate flex-1">{chat.title}</span>
+                    )}
+                    {editingTitleId !== chat.id && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteChat(chat.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-600 text-xs px-1"
+                        title="Sohbeti sil"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </aside>
 
         <main className="flex-1 flex flex-col">
-          {messages.length > 0 && (
-            <div className="border-b px-4 py-1 flex items-center justify-end">
-              <button
-                onClick={() => setMessages([])}
-                className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
-                title="Mesajları temizle"
-              >
-                Yeni Sohbet
-              </button>
+          {(activeChat || messages.length > 0) && (
+            <div className="border-b px-4 py-1 flex items-center justify-between">
+              <span className="text-sm text-gray-600 truncate">
+                {activeChat ? activeChat.title : "Yeni Sohbet"}
+              </span>
+              {messages.length > 0 && (
+                <button
+                  onClick={handleNewChat}
+                  className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
+                  title="Yeni sohbet"
+                >
+                  + Yeni Sohbet
+                </button>
+              )}
             </div>
           )}
           <div
@@ -654,22 +933,21 @@ function App() {
               <p className="text-sm text-gray-400 text-center mt-8">
                 {selectedDoc
                   ? "Soru yazıp gönderebilirsin."
-                  : "Önce sol panelden bir doküman seç."}
+                  : "Bir doküman seç ya da seçmeden tüm koleksiyonda sor."}
               </p>
             )}
             {messages.map((msg, i) => {
               const isLastStreaming = isStreaming && i === messages.length - 1;
               if (msg.role === "user") {
                 return (
-                  <div
-                    key={i}
-                    className="max-w-xl ml-auto bg-blue-500 text-white px-3 py-2 rounded-lg whitespace-pre-wrap"
-                  >
-                    {msg.content}
+                  <div key={i} className="max-w-xl ml-auto">
+                    <div className="bg-blue-500 text-white px-3 py-2 rounded-lg whitespace-pre-wrap">
+                      {msg.content}
+                    </div>
+                    <ScopeBadge scope={msg.scope} />
                   </div>
                 );
               }
-              // Asistan
               return (
                 <div
                   key={i}
@@ -698,12 +976,16 @@ function App() {
                 }
               }}
               disabled={isStreaming}
-              placeholder={selectedDoc ? "Soru yaz..." : "Önce doküman seç"}
+              placeholder={
+                selectedDoc
+                  ? `'${selectedDoc}' içinde sor...`
+                  : "Tüm koleksiyonda sor..."
+              }
               className="flex-1 border rounded px-3 py-2 disabled:bg-gray-100"
             />
             <button
               onClick={handleSend}
-              disabled={!selectedDoc || !input.trim() || isStreaming}
+              disabled={!input.trim() || isStreaming}
               className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
               {isStreaming ? "..." : "Gönder"}
