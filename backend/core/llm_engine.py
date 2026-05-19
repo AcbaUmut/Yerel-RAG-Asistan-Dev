@@ -111,3 +111,11 @@ Soru: {question}<end_of_turn>
             del self.llm
         gc.collect()
         log.info("LLM belleği temizlendi.")
+
+    # Context manager protokolü — 'with LLMEngine() as llm:' kullanımı için.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.unload()
+        return False

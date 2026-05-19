@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -26,6 +27,18 @@ def setup_logging(
     """
     os.makedirs(log_dir, exist_ok=True)
 
+    # Windows konsolu default cp1252; Türkçe karakterler UnicodeEncodeError
+    # fırlatır ve log handler crash eder, asıl hatayı gizler.
+    # UTF-8'e zorla, encode edilemeyen karakteri 'replace' ile sessizce değiştir.
+    try:
+        if sys.stdout and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr and sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        # reconfigure mevcut değil veya stream zaten kapalı — sessizce geç
+        pass
+
     root = logging.getLogger()
     root.setLevel(
         logging.DEBUG
@@ -37,7 +50,8 @@ def setup_logging(
 
     # ── Konsol handler — sade format ─────────────────────────────────────────
     console_fmt = logging.Formatter("[%(levelname)s] %(message)s")
-    console_handler = logging.StreamHandler()
+    # Explicit sys.stdout: yukarıda reconfigure edilmiş UTF-8 stream'i kullansın.
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_level)
     console_handler.setFormatter(console_fmt)
     root.addHandler(console_handler)

@@ -291,3 +291,11 @@ class VectorStoreEngine:
         gc.collect()
 
         log.info("Embedding belleği temizlendi.")
+
+    # Context manager protokolü — 'with VectorStoreEngine() as ve:' kullanımı için.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.unload()
+        return False

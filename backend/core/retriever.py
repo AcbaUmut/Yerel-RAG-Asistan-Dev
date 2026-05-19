@@ -372,3 +372,11 @@ class RetrieverEngine:
             del self.reranker
         gc.collect()
         log.info("Reranker belleği temizlendi.")
+
+    # Context manager protokolü — 'with RetrieverEngine(...) as ret:' kullanımı için.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.unload()
+        return False

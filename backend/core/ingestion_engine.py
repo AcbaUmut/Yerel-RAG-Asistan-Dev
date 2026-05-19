@@ -26,6 +26,10 @@ class IngestionEngine:
     Hata politikası (D1):
         Bir dosya hata verirse atlanır, diğerlerine devam edilir.
         Sonunda başarılı/başarısız özet raporu döndürülür.
+
+    Bellek güvenliği: VLM optional olduğu için manuel try/finally;
+    VectorStoreEngine 'with' bloğuyla. İkisinde de exception olsa bile
+    unload garantili.
     """
 
     def __init__(self, persist_dir: str = str(AppConfig.DATABASE_DIR)):
@@ -55,6 +59,8 @@ class IngestionEngine:
         failed: list[dict] = []
 
         # ── Faz 1: VLM ile parse ─────────────────────────────────────────────
+        # VLM optional: yüklenemezse parser görselsiz devam eder.
+        # 'with' bloğu None için çalışmaz, bu yüzden manuel try/finally.
         log.info("Faz 1: VLM yükleniyor...")
         vlm_engine = None
         try:
@@ -67,40 +73,42 @@ class IngestionEngine:
                 exc_info=True,
             )
 
-        parser = DocumentParser()
+        try:
+            parser = DocumentParser()
 
-        for file_path in file_paths:
-            file_name = os.path.basename(file_path)
-            log.info(f"Parse ediliyor: {file_name}")
+            for file_path in file_paths:
+                file_name = os.path.basename(file_path)
+                log.info(f"Parse ediliyor: {file_name}")
 
-            if not os.path.exists(file_path):
-                failed.append({"file_name": file_name, "reason": "Dosya bulunamadı"})
-                log.error(f"Dosya bulunamadı: {file_path}")
-                continue
+                if not os.path.exists(file_path):
+                    failed.append({"file_name": file_name, "reason": "Dosya bulunamadı"})
+                    log.error(f"Dosya bulunamadı: {file_path}")
+                    continue
 
-            try:
-                # Per-file parse süresini ölç — tez için performans verisi olur
-                t = time.time()
-                chunks = parser.parse(file_path=file_path, vlm_engine=vlm_engine)
-                parse_duration = time.time() - t
-                parsed.append(
-                    {"file_path": file_path, "file_name": file_name, "chunks": chunks}
-                )
-                log.debug(
-                    f"{file_name} parse edildi: {len(chunks)} node, "
-                    f"{parse_duration:.2f} sn"
-                )
-            except Exception as e:
-                failed.append({"file_name": file_name, "reason": f"Parse hatası: {e}"})
-                log.error(f"{file_name} parse edilemedi: {e}", exc_info=True)
-
-        # VLM unload — VRAM serbest
-        if vlm_engine is not None:
-            log.info("Faz 1 bitti, VLM tahliye ediliyor.")
-            vlm_engine.unload()
-            del vlm_engine
-        gc.collect()
-        log.debug("VRAM boşaltıldı (Faz 1 sonu).")
+                try:
+                    # Per-file parse süresini ölç — tez için performans verisi olur
+                    t = time.time()
+                    chunks = parser.parse(file_path=file_path, vlm_engine=vlm_engine)
+                    parse_duration = time.time() - t
+                    parsed.append(
+                        {"file_path": file_path, "file_name": file_name, "chunks": chunks}
+                    )
+                    log.debug(
+                        f"{file_name} parse edildi: {len(chunks)} node, "
+                        f"{parse_duration:.2f} sn"
+                    )
+                except Exception as e:
+                    failed.append({"file_name": file_name, "reason": f"Parse hatası: {e}"})
+                    log.error(f"{file_name} parse edilemedi: {e}", exc_info=True)
+        finally:
+            # Faz 1 cleanup — parse hatası, KeyboardInterrupt vs olsa bile VLM
+            # mutlaka VRAM'den temizlenir.
+            if vlm_engine is not None:
+                log.info("Faz 1 bitti, VLM tahliye ediliyor.")
+                vlm_engine.unload()
+                del vlm_engine
+            gc.collect()
+            log.debug("VRAM boşaltıldı (Faz 1 sonu).")
 
         if not parsed:
             log.warning("Hiçbir dosya başarıyla parse edilemedi, Faz 2 atlandı.")
@@ -108,49 +116,45 @@ class IngestionEngine:
 
         # ── Faz 2: Embedding + ChromaDB yazımı ───────────────────────────────
         log.info("Faz 2: Embedding (Jina) yükleniyor...")
-        vector_engine = VectorStoreEngine(
-            persist_dir=self.persist_dir,
-            collection_name=collection_name,
-        )
-
         success: list[dict] = []
 
-        for item in parsed:
-            file_name = item["file_name"]
-            chunks = item["chunks"]
+        with VectorStoreEngine(
+            persist_dir=self.persist_dir,
+            collection_name=collection_name,
+        ) as vector_engine:
+            for item in parsed:
+                file_name = item["file_name"]
+                chunks = item["chunks"]
 
-            try:
-                # Her chunk'a collection_name metadata'sı ekle (silme için kritik)
-                for node in chunks:
-                    node.metadata["collection_name"] = collection_name
+                try:
+                    # Her chunk'a collection_name metadata'sı ekle (silme için kritik)
+                    for node in chunks:
+                        node.metadata["collection_name"] = collection_name
 
-                # Per-file yazma süresini ölç
-                t = time.time()
-                child_count, section_count = vector_engine.add_nodes(
-                    nodes=chunks, file_name=file_name
-                )
-                write_duration = time.time() - t
-                success.append(
-                    {
-                        "file_name": file_name,
-                        "chunk_count": child_count,
-                        "section_count": section_count,
-                        "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                )
-                log.debug(
-                    f"{file_name} yazıldı: {child_count} child, "
-                    f"{section_count} section, {write_duration:.2f} sn"
-                )
-            except Exception as e:
-                failed.append({"file_name": file_name, "reason": f"Yazma hatası: {e}"})
-                log.error(f"{file_name} ChromaDB'ye yazılamadı: {e}", exc_info=True)
-
-        # ── Faz 2 sonu: embedding modelini VRAM'den at ──
-        log.info("Faz 2 bitti, embedding modeli tahliye ediliyor.")
-        vector_engine.unload()
-        del vector_engine
+                    # Per-file yazma süresini ölç
+                    t = time.time()
+                    child_count, section_count = vector_engine.add_nodes(
+                        nodes=chunks, file_name=file_name
+                    )
+                    write_duration = time.time() - t
+                    success.append(
+                        {
+                            "file_name": file_name,
+                            "chunk_count": child_count,
+                            "section_count": section_count,
+                            "added_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
+                    log.debug(
+                        f"{file_name} yazıldı: {child_count} child, "
+                        f"{section_count} section, {write_duration:.2f} sn"
+                    )
+                except Exception as e:
+                    failed.append({"file_name": file_name, "reason": f"Yazma hatası: {e}"})
+                    log.error(f"{file_name} ChromaDB'ye yazılamadı: {e}", exc_info=True)
+        # Vector engine burada otomatik unload — exception olsa bile.
         gc.collect()
+        log.info("Faz 2 bitti, embedding modeli tahliye ediliyor.")
 
         # ── Özet rapor ───────────────────────────────────────────────────────
         elapsed = time.time() - start_time

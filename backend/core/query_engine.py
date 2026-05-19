@@ -23,6 +23,9 @@ class QueryEngine:
 
     Retriever CPU'da olduğu için aslında LLM ile aynı anda durabilirdi,
     ama bellek temizliği ve tutarlılık adına eski akış korunuyor.
+
+    Bellek güvenliği: Tüm engine'ler 'with' bloklarında kullanılır.
+    Exception, GeneratorExit veya normal çıkışta otomatik unload garantili.
     """
 
     def __init__(
@@ -39,6 +42,9 @@ class QueryEngine:
 
         file_name: Hangi dokümanda arama yapılacak. RetrieverEngine'a
                    metadata filtresi olarak iletilir.
+
+        Bellek yönetimi: 'with' blokları sayesinde RetrieverEngine ve
+        LLMEngine her koşulda (exception olsa bile) unload edilir.
         """
         log.info(
             f"Sorgu başlatıldı — koleksiyon: '{self.collection_name}', "
@@ -46,47 +52,40 @@ class QueryEngine:
         )
         start_time = time.time()
 
-        # ── 1. Retriever ──
+        # ── 1. Retriever ile bağlam çek ──
         log.info("Retriever yükleniyor...")
         t = time.time()
-        retriever = RetrieverEngine(
+        with RetrieverEngine(
             collection_name=self.collection_name,
             persist_dir=self.persist_dir,
-        )
-        log.debug(f"Retriever hazır ({time.time() - t:.2f} sn).")
+        ) as retriever:
+            log.debug(f"Retriever hazır ({time.time() - t:.2f} sn).")
 
-        # ── 2. Bağlam çek ──
-        log.info("Veritabanında arama + reranker çalışıyor...")
-        t = time.time()
-        context_text = retriever.get_relevant_context(
-            query=question,
-            top_n=AppConfig.RERANKER_TOP_N,
-            threshold=0.0,
-            file_name=file_name,
-        )
-        log.debug(f"Bağlam hazır ({time.time() - t:.2f} sn).")
-
-        retriever.unload()
-        del retriever
+            log.info("Veritabanında arama + reranker çalışıyor...")
+            t = time.time()
+            context_text = retriever.get_relevant_context(
+                query=question,
+                top_n=AppConfig.RERANKER_TOP_N,
+                threshold=0.0,
+                file_name=file_name,
+            )
+            log.debug(f"Bağlam hazır ({time.time() - t:.2f} sn).")
+        # Retriever burada otomatik unload — exception olsa bile.
         gc.collect()
 
         if not context_text:
             log.warning("Bağlam boş — LLM çağrılmadan dönülüyor.")
             return "Bu doküman için sorguya uygun bir bağlam bulunamadı."
 
-        # ── 3. LLM ──
+        # ── 2. LLM ile cevap üret ──
         log.info("LLM yükleniyor ve cevap üretiyor...")
         t = time.time()
-        llm = LLMEngine()
-        log.debug(f"LLM hazır ({time.time() - t:.2f} sn).")
-
-        gen_start = time.time()
-        answer = llm.generate_answer(context=context_text, question=question)
-
-        log.info(f"LLM cevabı üretildi ({time.time() - gen_start:.2f} sn).")
-
-        llm.unload()
-        del llm
+        with LLMEngine() as llm:
+            log.debug(f"LLM hazır ({time.time() - t:.2f} sn).")
+            gen_start = time.time()
+            answer = llm.generate_answer(context=context_text, question=question)
+            log.info(f"LLM cevabı üretildi ({time.time() - gen_start:.2f} sn).")
+        # LLM burada otomatik unload.
         gc.collect()
 
         log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")
@@ -97,8 +96,9 @@ class QueryEngine:
         Sorguyu çalıştırır, cevabı token token yield eder.
 
         Akış run() ile aynı — retriever çek, LLM çağır — ama LLM
-        aşamasında stream döner. Modellerin yüklenme/boşaltma sırası
-        değişmez, sadece cevabı tek seferde değil parça parça veriyoruz.
+        aşamasında stream döner. 'with' blokları sayesinde frontend
+        bağlantıyı koparırsa (GeneratorExit) veya exception çıkarsa bile
+        her iki engine unload edilir.
         """
         log.info(
             f"Streaming sorgu — koleksiyon: '{self.collection_name}', "
@@ -106,24 +106,19 @@ class QueryEngine:
         )
         start_time = time.time()
 
-        # ── 1. Retriever ──
+        # ── 1. Retriever ile bağlam çek ──
         log.info("Retriever yükleniyor...")
-        retriever = RetrieverEngine(
+        with RetrieverEngine(
             collection_name=self.collection_name,
             persist_dir=self.persist_dir,
-        )
-
-        # ── 2. Bağlam çek ──
-        log.info("Veritabanında arama + reranker çalışıyor...")
-        context_text = retriever.get_relevant_context(
-            query=question,
-            top_n=AppConfig.RERANKER_TOP_N,
-            threshold=0.0,
-            file_name=file_name,
-        )
-
-        retriever.unload()
-        del retriever
+        ) as retriever:
+            log.info("Veritabanında arama + reranker çalışıyor...")
+            context_text = retriever.get_relevant_context(
+                query=question,
+                top_n=AppConfig.RERANKER_TOP_N,
+                threshold=0.0,
+                file_name=file_name,
+            )
         gc.collect()
 
         if not context_text:
@@ -131,23 +126,19 @@ class QueryEngine:
             yield "Bu doküman için sorguya uygun bir bağlam bulunamadı."
             return
 
-        # ── 3. LLM ──
+        # ── 2. LLM stream ──
         log.info("LLM yükleniyor ve cevap akıtılıyor...")
-        llm = LLMEngine()
-
         gen_start = time.time()
-        try:
-            # generate_answer_stream her chunk'ı yield ediyor;
-            # biz de aynısını yukarı aktarıyoruz.
-            for chunk in llm.generate_answer_stream(
-                context=context_text, question=question
-            ):
-                yield chunk
-        finally:
-            # Stream bitse de yarıda kesilse de LLM mutlaka temizlensin.
-            # Frontend bağlantıyı koparırsa GeneratorExit fırlar, finally yine çalışır.
-            log.info(f"LLM cevabı bitti ({time.time() - gen_start:.2f} sn).")
-            llm.unload()
-            del llm
-            gc.collect()
-            log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")
+        with LLMEngine() as llm:
+            try:
+                for chunk in llm.generate_answer_stream(
+                    context=context_text,
+                    question=question,
+                ):
+                    yield chunk
+            finally:
+                # with bloku LLM unload'u zaten garanti ediyor; bu finally
+                # sadece süre log'u için. GeneratorExit'te de çalışır.
+                log.info(f"LLM cevabı bitti ({time.time() - gen_start:.2f} sn).")
+        gc.collect()
+        log.info(f"Sorgu tamamlandı ({time.time() - start_time:.2f} sn).")

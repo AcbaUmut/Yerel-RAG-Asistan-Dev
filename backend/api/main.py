@@ -3,6 +3,8 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
+from contextlib import asynccontextmanager
 
 from core.config import AppConfig
 from core.db_manager import DBManager
@@ -18,8 +20,21 @@ from pydantic import BaseModel
 setup_logging()
 log = logging.getLogger(__name__)
 
+
+# FastAPI lifespan — startup ve shutdown event'lerini tek context manager'da
+# topluyor. on_event() deprecated, modern yol budur.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("FastAPI sunucusu başlatıldı.")
+    yield
+    # Buraya gelirse uvicorn düzgün shutdown yapıyor (Ctrl+C, SIGTERM).
+    # Process zaten ölecek ve OS GPU memory'yi serbest bırakacak; bu hook
+    # log integrity için: kapanma temiz mi yoksa crash mi anlamak için.
+    log.info("FastAPI sunucusu kapanıyor.")
+
+
 # FastAPI uygulaması — sunucunun "kalbi"
-app = FastAPI(title="Yerel RAG Asistani API")
+app = FastAPI(title="Yerel RAG Asistani API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +48,12 @@ app.add_middleware(
 # sürece yaşar. Terminal'deki App.__init__ içindeki self.db
 # ne işe yarıyorsa burada da aynı görev.
 db = DBManager()
+
+# Sorgu lock'u — aynı anda en fazla bir sorgu çalışsın.
+# Sebep: 8GB VRAM kullanıcı aynı anda iki sorgu gönderirse iki LLM yan yana
+# yüklenmeye çalışır → VRAM çakması. Lock ile ikincisi 409 alıp kullanıcıya
+# "birkaç saniye sonra tekrar dene" der.
+query_lock = threading.Lock()
 
 
 @app.get("/health")
@@ -249,6 +270,9 @@ def query(body: QueryRequest):
     """
     Aktif koleksiyondaki belirli bir doküman üzerinde sorgu çalıştırır.
     Modeller yüklenip cevap üretildiği için uzun sürebilir.
+
+    Eşzamanlılık: aynı anda tek bir sorgu çalışır (VRAM koruması).
+    İkinci istek gelirse 409 Conflict döner.
     """
     # Boş soru kontrolü — Pydantic str doğrulamasını geçer ama anlamsız iş.
     if not body.question.strip():
@@ -261,9 +285,20 @@ def query(body: QueryRequest):
             detail=f"'{body.file_name}' aktif koleksiyonda bulunamadı.",
         )
 
-    engine = QueryEngine(collection_name=db.active_collection)
-    answer = engine.run(question=body.question, file_name=body.file_name)
-    return {"answer": answer}
+    # Lock'u dene — şu an başka sorgu çalışıyorsa hemen 409 dön.
+    if not query_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Sunucu şu an başka bir sorgu işliyor. Lütfen birkaç saniye bekleyip tekrar deneyin.",
+        )
+
+    try:
+        engine = QueryEngine(collection_name=db.active_collection)
+        answer = engine.run(question=body.question, file_name=body.file_name)
+        return {"answer": answer}
+    finally:
+        query_lock.release()
+        log.info("Sorgu lock'u serbest bırakıldı (/query).")
 
 
 @app.post("/query/stream")
@@ -271,6 +306,9 @@ def query_stream(body: QueryRequest):
     """
     Sorguyu çalıştırır, cevabı token token akıtır.
     Frontend ReadableStream ile parçaları okur ve ekrana yazar.
+
+    Eşzamanlılık: aynı anda tek bir sorgu çalışır (VRAM koruması).
+    İkinci istek gelirse 409 Conflict döner.
     """
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Soru boş olamaz.")
@@ -281,8 +319,31 @@ def query_stream(body: QueryRequest):
             detail=f"'{body.file_name}' aktif koleksiyonda bulunamadı.",
         )
 
-    engine = QueryEngine(collection_name=db.active_collection)
+    # Lock'u dene — başka bir streaming devam ediyorsa hemen 409 dön.
+    if not query_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Sunucu şu an başka bir sorgu işliyor. Lütfen birkaç saniye bekleyip tekrar deneyin.",
+        )
+
+    def stream_with_lock():
+        """
+        Generator: stream yarıda kesilse de (GeneratorExit) finally ile
+        lock garantili serbest kalır. with QueryEngine bloku da ayrıca
+        modellerin unload edilmesini sağlar.
+        """
+        try:
+            engine = QueryEngine(collection_name=db.active_collection)
+            for chunk in engine.run_stream(
+                question=body.question,
+                file_name=body.file_name,
+            ):
+                yield chunk
+        finally:
+            query_lock.release()
+            log.info("Sorgu lock'u serbest bırakıldı (/query/stream).")
+
     return StreamingResponse(
-        engine.run_stream(question=body.question, file_name=body.file_name),
+        stream_with_lock(),
         media_type="text/plain; charset=utf-8",
     )

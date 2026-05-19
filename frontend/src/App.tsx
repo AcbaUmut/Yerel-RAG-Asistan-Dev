@@ -112,6 +112,10 @@ function App() {
   const [maxFileSizeMb, setMaxFileSizeMb] = useState<number>(50);
   const [toast, setToast] = useState<ToastMsg | null>(null);
 
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState<boolean>(true);
+
   useEffect(() => {
     Promise.all([
       fetch("http://localhost:8000/documents").then((r) => r.json()),
@@ -155,6 +159,22 @@ function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Mesaj geldikçe otomatik en alta kay — ama kullanıcı yukarı kaydırdıysa karma.
+  useEffect(() => {
+    if (autoScroll) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, autoScroll]);
+
+  // Kullanıcı scroll edince autoScroll'u güncelle.
+  // En altta mı? → autoScroll açık. Yukarıdaysa → kapalı.
+  function handleMessagesScroll() {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    setAutoScroll(atBottom);
+  }
+
   async function handleSend() {
     if (!input.trim() || !selectedDoc || isStreaming) return;
 
@@ -174,6 +194,17 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, file_name: selectedDoc }),
       });
+
+      if (response.status === 409) {
+        // Sunucu meşgul — başka sorgu işleniyor. Mesajı silip toast göster.
+        setMessages((prev) => prev.slice(0, -2)); // user + boş asistanı sil
+        setToast({
+          type: "info",
+          message:
+            "Sunucu şu an başka bir sorgu işliyor. Birkaç saniye bekleyip tekrar deneyin.",
+        });
+        return;
+      }
 
       if (!response.ok || !response.body) {
         throw new Error(`HTTP ${response.status}`);
@@ -578,7 +609,11 @@ function App() {
                       ? "bg-blue-100 text-blue-900"
                       : "hover:bg-gray-100"
                   }`}
-                  onClick={() => setSelectedDoc(doc.file_name)}
+                  onClick={() =>
+                    setSelectedDoc((prev) =>
+                      prev === doc.file_name ? null : doc.file_name
+                    )
+                  }
                 >
                   <span className="truncate">{doc.file_name}</span>
                   <button
@@ -599,7 +634,22 @@ function App() {
         </aside>
 
         <main className="flex-1 flex flex-col">
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {messages.length > 0 && (
+            <div className="border-b px-4 py-1 flex items-center justify-end">
+              <button
+                onClick={() => setMessages([])}
+                className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
+                title="Mesajları temizle"
+              >
+                Yeni Sohbet
+              </button>
+            </div>
+          )}
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleMessagesScroll}
+            className="flex-1 overflow-y-auto p-4 space-y-3"
+          >
             {messages.length === 0 && (
               <p className="text-sm text-gray-400 text-center mt-8">
                 {selectedDoc
@@ -633,6 +683,7 @@ function App() {
                 </div>
               );
             })}
+            <div ref={messagesEndRef} />
           </div>
 
           <div className="border-t p-4 flex gap-2">

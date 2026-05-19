@@ -178,3 +178,12 @@ class VLMEngine:
             del self.chat_handler
         gc.collect()
         log.info("VLM belleği temizlendi.")
+
+    # Context manager protokolü — 'with VLMEngine() as vlm:' kullanımı için.
+    # __exit__ exception olsa bile çalışır, VRAM sızıntısını önler.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.unload()
+        return False  # Exception'ı yutmasın, yukarı propagate olsun
